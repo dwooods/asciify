@@ -1,0 +1,33 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A client-side image-to-braille-text converter: drop in an image, get back Unicode braille dot-matrix text art (U+2800–U+28FF) that pastes anywhere monospace text works. Plain HTML/CSS/JS, no build step, no runtime dependencies — opening `index.html` directly (`file://`) must keep working, so nothing here should require a bundler or ES modules.
+
+The dithering/braille-packing approach is ported from [Lachlan Arthur's Braille-ASCII-Art](https://github.com/LachlanArthur/Braille-ASCII-Art) (MIT).
+
+## Commands
+
+```bash
+npm test              # run the test suite (node --test)
+node --test            # same, directly
+python3 -m http.server  # serve locally (needed for APIs file:// restricts)
+npx http-server .       # alternative local server
+```
+
+There is no build/lint step. To run a single test, use Node's built-in filtering, e.g. `node --test --test-name-pattern="packBrailleCell"`.
+
+CI (`.github/workflows/test.yml`) runs `npm test` on every push/PR to `main`. `main` also auto-deploys to GitHub Pages on every push.
+
+## Architecture
+
+The rendering pipeline is split across two plain (non-module) scripts loaded in order by `index.html`:
+
+- **`dither.js`** — pure logic only, no DOM access. Exposes `rgbaOffset`, `KernelDitherer`, `ditherers` (threshold/floydSteinberg/stucki/atkinson), and `packBrailleCell` via a UMD-style guard: `window.AsciifyDither` in the browser, `module.exports` under Node. This split exists specifically so the math is unit-testable with Node's built-in test runner without introducing a bundler, transpiler, or `ImageData`/DOM polyfills — `KernelDitherer.dither()` deliberately returns a plain `{width, height, data}` object rather than a real `ImageData` instance, since nothing downstream needs the real DOM type.
+- **`script.js`** — all DOM/canvas wiring: reads `window.AsciifyDither`, binds the controls, and does the actual render pipeline in `render()`: draw the source image onto a hidden canvas at `width*2 × height*4` px (2×4 dots per braille cell) → composite in `luminosity` blend mode over white for greyscale → run the selected dithering kernel → pack each 2×4 pixel block into a braille codepoint via `packBrailleCell`.
+
+Keep this split intact: any change to the dithering/packing math belongs in `dither.js` (and should get a test in `tests/dither.test.js`); anything touching the UI, events, or rendering orchestration belongs in `script.js`.
+
+`tests/dither.test.js` covers the pixel-quantization math and the bit-to-braille-dot mapping (validated against the actual Unicode Braille Patterns dot numbering) — there is no automated coverage of the UI itself (drag-and-drop, file loading, DOM rendering).
