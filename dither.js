@@ -126,6 +126,17 @@
     return "/";
   }
 
+  // Levels adjustment applied before dithering/ramp-mapping: brightness is
+  // a flat offset, then blackPoint/whitePoint linearly remap that range to
+  // 0-255 (values outside it clamp), the same "brightness + levels" model
+  // real image-to-ASCII tools expose. Defaults (0, 0, 255) are a no-op.
+  function adjustLevels(value, brightness, blackPoint, whitePoint) {
+    const v = value + brightness;
+    const range = whitePoint - blackPoint;
+    const remapped = range === 0 ? (v < blackPoint ? 0 : 255) : ((v - blackPoint) / range) * 255;
+    return Math.max(0, Math.min(255, remapped));
+  }
+
   const api = {
     rgbaOffset,
     KernelDitherer,
@@ -136,6 +147,7 @@
     luminanceToChar,
     sobelGradient,
     edgeChar,
+    adjustLevels,
   };
 
   if (typeof module !== "undefined" && module.exports) {

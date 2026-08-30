@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-  const { rgbaOffset, ditherers, packBrailleCell, asciiRamp, asciiRampBlocks, luminanceToChar, sobelGradient, edgeChar } = window.AsciifyDither;
+  const { rgbaOffset, ditherers, packBrailleCell, asciiRamp, asciiRampBlocks, luminanceToChar, sobelGradient, edgeChar, adjustLevels } = window.AsciifyDither;
 
   const charsetPresets = { standard: asciiRamp, blocks: asciiRampBlocks };
 
@@ -27,6 +27,11 @@
   let invert = false;
   let threshold = 127;
   let asciiWidth = 100;
+  let lockAspect = true;
+  let manualHeight = 50;
+  let brightness = 0;
+  let blackPoint = 0;
+  let whitePoint = 255;
   let image = null;
   let ascii = "";
 
@@ -47,6 +52,14 @@
   const charsetSel = $("#charset");
   const paletteInput = $("#palette");
   const widthInput = $("#width");
+  const heightInput = $("#height");
+  const lockAspectInput = $("#lockAspect");
+  const brightnessInput = $("#brightness");
+  const brightnessVal = $("#brightnessVal");
+  const blackPointInput = $("#blackPoint");
+  const blackPointVal = $("#blackPointVal");
+  const whitePointInput = $("#whitePoint");
+  const whitePointVal = $("#whitePointVal");
   const fontSizeInput = $("#fontSize");
   const fontSizeVal = $("#fontSizeVal");
   const invertInput = $("#invert");
@@ -192,6 +205,55 @@
     render();
   });
 
+  heightInput.addEventListener("input", function () {
+    if (lockAspect) return;
+    const v = parseInt(this.value, 10);
+    if (!v || v === manualHeight || v < 1) return;
+    manualHeight = v;
+    render();
+  });
+
+  lockAspectInput.addEventListener("change", function () {
+    lockAspect = this.checked;
+    heightInput.disabled = lockAspect;
+    if (!lockAspect) {
+      // Seed the manual height with whatever the auto-computed value
+      // currently is, so unlocking doesn't cause a sudden jump in the output.
+      manualHeight = parseInt(heightInput.value, 10) || manualHeight;
+    }
+    render();
+  });
+
+  brightnessInput.addEventListener("input", function () {
+    brightnessVal.textContent = this.value;
+  });
+  brightnessInput.addEventListener("change", function () {
+    const v = parseInt(this.value, 10);
+    if (v === brightness) return;
+    brightness = v;
+    render();
+  });
+
+  blackPointInput.addEventListener("input", function () {
+    blackPointVal.textContent = this.value;
+  });
+  blackPointInput.addEventListener("change", function () {
+    const v = parseInt(this.value, 10);
+    if (v === blackPoint) return;
+    blackPoint = v;
+    render();
+  });
+
+  whitePointInput.addEventListener("input", function () {
+    whitePointVal.textContent = this.value;
+  });
+  whitePointInput.addEventListener("change", function () {
+    const v = parseInt(this.value, 10);
+    if (v === whitePoint) return;
+    whitePoint = v;
+    render();
+  });
+
   fontSizeInput.addEventListener("input", function () {
     fontSizeVal.textContent = this.value + "px";
     output.style.setProperty("--font-size", this.value + "px");
@@ -313,17 +375,39 @@
     charCount.textContent = ascii.length.toLocaleString();
     const cols = lines.reduce((max, l) => Math.max(max, l.length), 0);
     gridInfo.textContent = ` (${cols}×${lines.length})`;
+    // While the aspect ratio is locked, keep the Height field showing the
+    // real auto-computed value rather than a stale number from last render.
+    if (lockAspect) heightInput.value = lines.length;
 
     emptyState.style.display = "none";
     output.style.display = "block";
     output.innerHTML = asciiHtml.join("<br>");
   }
 
+  // Applies the brightness/black-point/white-point levels adjustment to a
+  // greyscale RGBA buffer in place, before dithering or ramp-mapping. Only
+  // needs to touch one channel per pixel since the luminosity composite
+  // upstream already guarantees R=G=B, but all three (plus alpha) are kept
+  // in sync so the buffer stays a valid, consistent ImageData if ever read
+  // by anything else.
+  function applyLevels(data, width, height) {
+    if (brightness === 0 && blackPoint === 0 && whitePoint === 255) return;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const o = rgbaOffset(x, y, width);
+        const v = adjustLevels(data[o], brightness, blackPoint, whitePoint);
+        data[o] = data[o + 1] = data[o + 2] = v;
+      }
+    }
+  }
+
   function renderBrailleMode() {
     // Each output character is one braille cell (asciiXDots x asciiYDots
     // pixels), so the canvas is sized in actual pixels at that multiple of
     // the requested character width/height.
-    const asciiHeight = Math.ceil((asciiWidth * asciiXDots * (image.height / image.width)) / asciiYDots);
+    const asciiHeight = lockAspect
+      ? Math.ceil((asciiWidth * asciiXDots * (image.height / image.width)) / asciiYDots)
+      : manualHeight;
     canvas.width = asciiWidth * asciiXDots;
     canvas.height = asciiHeight * asciiYDots;
 
@@ -340,6 +424,7 @@
 
     const ditherer = ditherers[dithererName];
     const greyPixels = context.getImageData(0, 0, canvas.width, canvas.height);
+    applyLevels(greyPixels.data, canvas.width, canvas.height);
     const dithered = ditherer.dither(greyPixels, threshold);
     const targetValue = invert ? 255 : 0;
 
@@ -363,7 +448,9 @@
   // to the character grid's resolution and the browser's own image
   // downscaling does the per-cell brightness averaging for us.
   function prepareCharacterGrid() {
-    const height = Math.max(1, Math.round(asciiWidth * (image.height / image.width) * asciiCharAspect));
+    const height = lockAspect
+      ? Math.max(1, Math.round(asciiWidth * (image.height / image.width) * asciiCharAspect))
+      : manualHeight;
     canvas.width = asciiWidth;
     canvas.height = height;
 
@@ -376,7 +463,9 @@
     if ("imageSmoothingQuality" in context) context.imageSmoothingQuality = "high";
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
-    return context.getImageData(0, 0, canvas.width, canvas.height);
+    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    applyLevels(imageData.data, canvas.width, canvas.height);
+    return imageData;
   }
 
   function renderAsciiMode() {
