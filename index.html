@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Asciify — image to braille text art</title>
-  <meta name="description" content="Convert any image into Unicode braille dot-matrix text art, right in your browser.">
+  <title>Asciify — image to text art</title>
+  <meta name="description" content="Convert any image into text art — braille dots, ASCII shading, or line-art outlines — right in your browser.">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -13,7 +13,7 @@
     <header>
       <div>
         <h1>Asciify</h1>
-        <p class="tag">Turn any image into dot-matrix text art using the Unicode braille block — dithered, resizable, copy-pasteable anywhere monospace text works.</p>
+        <p class="tag">Turn any photo into text art, your way — braille dots, ASCII shading, or line-art outlines — right in your browser, ready to paste anywhere monospace text still rules.</p>
       </div>
       <p class="credit">Algorithm ported from <a href="https://lach.la" target="_blank" rel="noopener">Lachlan Arthur</a>'s <a href="https://github.com/LachlanArthur/Braille-ASCII-Art" target="_blank" rel="noopener">Braille-ASCII-Art</a> (MIT)</p>
     </header>
@@ -26,7 +26,11 @@
             <input type="file" id="filepicker" accept=".png,.jpeg,.jpg,.webp,.gif">
             <div class="hint">Click or drop an image, or paste with Ctrl/Cmd+V</div>
           </div>
-          <div class="thumb" id="thumb"><img id="thumbImg" alt="Source preview"></div>
+          <div class="thumb" id="thumb">
+            <img id="thumbImg" alt="Source preview">
+            <div class="imageInfo" id="imageInfo"></div>
+            <button class="btn" id="clearBtn" type="button">Clear image</button>
+          </div>
         </div>
 
         <div class="field">
@@ -53,6 +57,20 @@
           <input type="range" id="threshold" min="0" max="254" value="127">
         </div>
 
+        <div class="field" id="charsetField">
+          <label for="charset">Character set</label>
+          <select id="charset">
+            <option value="standard">Standard</option>
+            <option value="blocks">Blocks</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+
+        <div class="field" id="paletteField">
+          <label for="palette">Palette <span class="val">darkest → lightest</span></label>
+          <textarea id="palette" rows="2">@%#*+=-:. </textarea>
+        </div>
+
         <div class="field">
           <label for="width">Width <span class="val">characters</span></label>
           <input type="number" id="width" value="100" step="10" min="1">
@@ -71,7 +89,7 @@
 
       <div class="output-panel">
         <div class="output-bar">
-          <span class="count"><span id="charCount">0</span> characters</span>
+          <span class="count"><span id="charCount">0</span> characters<span id="gridInfo"></span></span>
           <div class="btn-group">
             <button class="btn" id="downloadBtn">.txt</button>
             <button class="btn" id="downloadPngBtn">PNG</button>

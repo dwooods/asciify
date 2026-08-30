@@ -99,24 +99,25 @@ test("packBrailleCell maps the bottom-right pixel to braille dot 8 (bit 7)", () 
 });
 
 test("luminanceToChar maps pure white to the lightest character in the ramp", () => {
-  assert.equal(luminanceToChar(255, asciiRamp, false), asciiRamp[0]);
+  // asciiRamp is ordered darkest (index 0) to lightest (last index).
+  assert.equal(luminanceToChar(255, asciiRamp, false), asciiRamp[asciiRamp.length - 1]);
 });
 
 test("luminanceToChar maps pure black to the densest character in the ramp", () => {
-  assert.equal(luminanceToChar(0, asciiRamp, false), asciiRamp[asciiRamp.length - 1]);
+  assert.equal(luminanceToChar(0, asciiRamp, false), asciiRamp[0]);
 });
 
 test("luminanceToChar invert swaps which end of the ramp bright/dark pixels map to", () => {
-  assert.equal(luminanceToChar(255, asciiRamp, true), asciiRamp[asciiRamp.length - 1]);
-  assert.equal(luminanceToChar(0, asciiRamp, true), asciiRamp[0]);
+  assert.equal(luminanceToChar(255, asciiRamp, true), asciiRamp[0]);
+  assert.equal(luminanceToChar(0, asciiRamp, true), asciiRamp[asciiRamp.length - 1]);
 });
 
-test("luminanceToChar is monotonic: darker values never map to a lighter ramp index", () => {
-  let lastIndex = -1;
+test("luminanceToChar is monotonic: darker values never map to a denser ramp index", () => {
+  let lastIndex = Infinity;
   for (let value = 255; value >= 0; value -= 17) {
     const char = luminanceToChar(value, asciiRamp, false);
     const index = asciiRamp.indexOf(char);
-    assert.ok(index >= lastIndex, `value ${value} produced index ${index}, expected >= ${lastIndex}`);
+    assert.ok(index <= lastIndex, `value ${value} produced index ${index}, expected <= ${lastIndex}`);
     lastIndex = index;
   }
 });

@@ -70,17 +70,21 @@
       ((+(data[rgbaOffset(x + 0, y + 0, width)] === targetValue)) << 0);
   }
 
-  // Standard density ramp for classic ASCII-art rendering: characters
-  // ordered from lightest/sparsest (space) to darkest/densest (@), the
-  // same convention widely used across ASCII-art converters.
-  const asciiRamp = " .:-=+*#%@";
+  // Standard density ramp for classic ASCII-art rendering, ordered from
+  // darkest/densest (@) to lightest/sparsest (space) - the convention most
+  // ASCII-art tools use and document to users editing a custom palette.
+  const asciiRamp = "@%#*+=-:. ";
+
+  // A shorter ramp using Unicode block-shade characters for a smoother
+  // gradient, at the cost of not being plain ASCII.
+  const asciiRampBlocks = "█▓▒░ ";
 
   // Maps a single greyscale value (0-255) to a character from a density
-  // ramp ordered light-to-dark. invert swaps which end of the ramp bright
-  // pixels map to, mirroring what the "Invert dots" toggle does for braille.
+  // ramp ordered darkest-to-lightest. invert swaps which end of the ramp
+  // bright pixels map to, mirroring what "Invert" does for braille dots.
   function luminanceToChar(value, ramp, invert) {
     const v = invert ? 255 - value : value;
-    const idx = Math.min(ramp.length - 1, Math.floor(((255 - v) / 256) * ramp.length));
+    const idx = Math.min(ramp.length - 1, Math.floor((v / 256) * ramp.length));
     return ramp[idx];
   }
 
@@ -128,6 +132,7 @@
     ditherers,
     packBrailleCell,
     asciiRamp,
+    asciiRampBlocks,
     luminanceToChar,
     sobelGradient,
     edgeChar,
