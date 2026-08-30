@@ -11,6 +11,10 @@
   // Braille cell is 2 dots wide, 4 dots tall.
   const asciiXDots = 2, asciiYDots = 4;
 
+  // Matches the #output font stack in style.css, so PNG/SVG exports render
+  // the same glyphs the on-screen preview already proved out.
+  const exportFontFamily = 'ui-monospace, "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace';
+
   let dithererName = "floydSteinberg";
   let invert = false;
   let threshold = 127;
@@ -35,6 +39,8 @@
   const charCount = $("#charCount");
   const copyBtn = $("#copyBtn");
   const downloadBtn = $("#downloadBtn");
+  const downloadPngBtn = $("#downloadPngBtn");
+  const downloadSvgBtn = $("#downloadSvgBtn");
   const dropzone = $("#dropzone");
   const thumb = $("#thumb");
   const thumbImg = $("#thumbImg");
@@ -67,6 +73,26 @@
   dropzone.addEventListener("drop", (e) => {
     const file = e.dataTransfer.files && e.dataTransfer.files[0];
     if (file) loadFile(file);
+  });
+
+  // Uses the classic clipboardData paste event (not navigator.clipboard.read,
+  // which needs a secure context) so pasting keeps working over file://.
+  // Only intercept the paste when it actually contains an image, so pasting
+  // text elsewhere on the page — including into the contenteditable output —
+  // is left alone.
+  window.addEventListener("paste", (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          loadFile(file);
+        }
+        break;
+      }
+    }
   });
 
   ditherSel.addEventListener("change", function () {
@@ -110,15 +136,93 @@
     setTimeout(() => (this.textContent = old), 1000);
   });
 
-  downloadBtn.addEventListener("click", function () {
-    if (!ascii) return;
-    const blob = new Blob([ascii], { type: "text/plain;charset=utf-8" });
+  function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "braille-art.txt";
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  downloadBtn.addEventListener("click", function () {
+    if (!ascii) return;
+    downloadBlob(new Blob([ascii], { type: "text/plain;charset=utf-8" }), "braille-art.txt");
+  });
+
+  const exportFontSize = 16;
+
+  // Shared sizing math for the PNG/SVG exports: both need the same grid
+  // dimensions in pixels, derived from the monospace font's advance width.
+  function measureAsciiGrid(lines) {
+    const lineHeight = exportFontSize;
+    const padding = exportFontSize;
+    const measure = document.createElement("canvas").getContext("2d");
+    measure.font = `${exportFontSize}px ${exportFontFamily}`;
+    const charWidth = measure.measureText("⠀").width;
+    const cols = lines.reduce((max, l) => Math.max(max, l.length), 0);
+    return {
+      lineHeight,
+      padding,
+      width: Math.ceil(charWidth * cols) + padding * 2,
+      height: lineHeight * lines.length + padding * 2,
+    };
+  }
+
+  // Rasterizes the same text grid to a canvas so the dots survive outside a
+  // monospace context (Discord, GitHub comments, print). Renders black text
+  // on a white background regardless of the page's light/dark theme, since
+  // the point is a portable, printable image rather than a screenshot of
+  // the app itself.
+  function renderAsciiToCanvas() {
+    const lines = ascii.split("\n");
+    const { lineHeight, padding, width, height } = measureAsciiGrid(lines);
+
+    const exportCanvas = document.createElement("canvas");
+    exportCanvas.width = width;
+    exportCanvas.height = height;
+
+    const ctx = exportCanvas.getContext("2d");
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = "black";
+    ctx.font = `${exportFontSize}px ${exportFontFamily}`;
+    ctx.textBaseline = "top";
+    lines.forEach((line, i) => {
+      ctx.fillText(line, padding, padding + i * lineHeight);
+    });
+
+    return exportCanvas;
+  }
+
+  downloadPngBtn.addEventListener("click", function () {
+    if (!ascii) return;
+    renderAsciiToCanvas().toBlob((blob) => downloadBlob(blob, "braille-art.png"), "image/png");
+  });
+
+  function escapeXml(text) {
+    return text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  }
+
+  downloadSvgBtn.addEventListener("click", function () {
+    if (!ascii) return;
+    const lines = ascii.split("\n");
+    const { lineHeight, padding, width, height } = measureAsciiGrid(lines);
+
+    const textEls = lines
+      .map((line, i) => `<text x="${padding}" y="${padding + i * lineHeight + exportFontSize * 0.8}" xml:space="preserve">${escapeXml(line)}</text>`)
+      .join("\n  ");
+
+    // font-family is single-quoted: exportFontFamily embeds double-quoted
+    // font names (e.g. "SF Mono"), which would otherwise close the
+    // attribute early and produce invalid XML.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" font-family='${exportFontFamily}' font-size="${exportFontSize}" fill="black">
+  <rect width="100%" height="100%" fill="white"/>
+  ${textEls}
+</svg>
+`;
+
+    downloadBlob(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }), "braille-art.svg");
   });
 
   function render() {
