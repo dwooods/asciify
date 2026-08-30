@@ -599,14 +599,18 @@
   // URL is untrusted input, not just our own previously-generated output.
   function restoreSettingsFromUrl() {
     const params = new URLSearchParams(location.search);
-    if (!params.toString()) return;
 
     const mode = params.get("mode");
     if (["braille", "ascii", "edges"].includes(mode)) {
       renderMode = mode;
       renderModeSel.value = mode;
     }
+    // Applies even with no query string at all, so the panel's field
+    // visibility always matches renderMode on first load, not whatever
+    // the raw HTML happens to show before any JS has run.
     applyRenderModeVisibility();
+
+    if (!params.toString()) return;
 
     const dither = params.get("dither");
     if (dither && ditherers[dither]) {
