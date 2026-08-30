@@ -154,8 +154,20 @@ a { color: var(--accent); }
   width: 100%;
   height: auto;
 }
+.imageInfo {
+  margin: 0.6rem 0.6rem 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.thumb .btn {
+  display: block;
+  margin: 0.6rem;
+  width: calc(100% - 1.2rem);
+}
 
-select, input[type="number"] {
+select, input[type="number"], textarea {
   width: 100%;
   font: inherit;
   font-family: "IBM Plex Mono", monospace;
@@ -166,7 +178,10 @@ select, input[type="number"] {
   background: var(--paper);
   color: var(--ink);
 }
-select:focus-visible, input:focus-visible, button:focus-visible {
+textarea {
+  resize: vertical;
+}
+select:focus-visible, input:focus-visible, button:focus-visible, textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

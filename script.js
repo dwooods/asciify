@@ -6,7 +6,9 @@
 (function () {
   "use strict";
 
-  const { rgbaOffset, ditherers, packBrailleCell, asciiRamp, luminanceToChar, sobelGradient, edgeChar } = window.AsciifyDither;
+  const { rgbaOffset, ditherers, packBrailleCell, asciiRamp, asciiRampBlocks, luminanceToChar, sobelGradient, edgeChar } = window.AsciifyDither;
+
+  const charsetPresets = { standard: asciiRamp, blocks: asciiRampBlocks };
 
   // Braille cell is 2 dots wide, 4 dots tall.
   const asciiXDots = 2, asciiYDots = 4;
@@ -37,9 +39,13 @@
   const ditherField = $("#ditherField");
   const thresholdField = $("#thresholdField");
   const invertField = $("#invertField");
+  const charsetField = $("#charsetField");
+  const paletteField = $("#paletteField");
   const ditherSel = $("#dither");
   const thresholdInput = $("#threshold");
   const thresholdVal = $("#thresholdVal");
+  const charsetSel = $("#charset");
+  const paletteInput = $("#palette");
   const widthInput = $("#width");
   const fontSizeInput = $("#fontSize");
   const fontSizeVal = $("#fontSizeVal");
@@ -47,6 +53,7 @@
   const output = $("#output");
   const emptyState = $("#emptyState");
   const charCount = $("#charCount");
+  const gridInfo = $("#gridInfo");
   const copyBtn = $("#copyBtn");
   const downloadBtn = $("#downloadBtn");
   const downloadPngBtn = $("#downloadPngBtn");
@@ -54,15 +61,41 @@
   const dropzone = $("#dropzone");
   const thumb = $("#thumb");
   const thumbImg = $("#thumbImg");
+  const imageInfo = $("#imageInfo");
+  const clearBtn = $("#clearBtn");
+
+  function formatBytes(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
 
   function loadFile(file) {
     if (!file) return;
+    imageInfo.textContent = `${file.name} · ${formatBytes(file.size)} · ${file.type || "unknown type"}`;
     image = document.createElement("img");
-    image.onload = render;
+    image.onload = () => {
+      imageInfo.textContent += ` · ${image.naturalWidth}×${image.naturalHeight}px`;
+      render();
+    };
     image.src = URL.createObjectURL(file);
     thumbImg.src = image.src;
     thumb.style.display = "block";
   }
+
+  clearBtn.addEventListener("click", function () {
+    image = null;
+    ascii = "";
+    filepicker.value = "";
+    thumb.style.display = "none";
+    thumbImg.src = "";
+    imageInfo.textContent = "";
+    gridInfo.textContent = "";
+    charCount.textContent = "0";
+    output.style.display = "none";
+    output.innerHTML = "";
+    emptyState.style.display = "flex";
+  });
 
   filepicker.addEventListener("change", function () {
     if (this.files && this.files.length) loadFile(this.files[0]);
@@ -116,12 +149,29 @@
     ditherField.style.display = renderMode === "braille" ? "" : "none";
     thresholdField.style.display = renderMode === "ascii" ? "none" : "";
     invertField.style.display = renderMode === "edges" ? "none" : "";
+    charsetField.style.display = renderMode === "ascii" ? "" : "none";
+    paletteField.style.display = renderMode === "ascii" ? "" : "none";
     render();
   });
 
   ditherSel.addEventListener("change", function () {
     if (this.value === dithererName) return;
     dithererName = this.value;
+    render();
+  });
+
+  charsetSel.addEventListener("change", function () {
+    const preset = charsetPresets[this.value];
+    if (preset) paletteInput.value = preset;
+    render();
+  });
+
+  paletteInput.addEventListener("input", function () {
+    // If the box no longer matches a known preset, reflect that as "Custom"
+    // in the dropdown rather than leaving it pointed at a preset it's since
+    // diverged from.
+    const matchedPreset = Object.entries(charsetPresets).find(([, v]) => v === this.value);
+    charsetSel.value = matchedPreset ? matchedPreset[0] : "custom";
     render();
   });
 
@@ -261,6 +311,8 @@
 
     ascii = lines.join("\n");
     charCount.textContent = ascii.length.toLocaleString();
+    const cols = lines.reduce((max, l) => Math.max(max, l.length), 0);
+    gridInfo.textContent = ` (${cols}×${lines.length})`;
 
     emptyState.style.display = "none";
     output.style.display = "block";
@@ -328,12 +380,15 @@
   }
 
   function renderAsciiMode() {
+    // Falls back to the standard ramp if the palette box is emptied out -
+    // an empty ramp has no valid character to index into.
+    const ramp = paletteInput.value || asciiRamp;
     const { data, width, height } = prepareCharacterGrid();
     const lines = [];
     for (let y = 0; y < height; y++) {
       let line = "";
       for (let x = 0; x < width; x++) {
-        line += luminanceToChar(data[rgbaOffset(x, y, width)], asciiRamp, invert);
+        line += luminanceToChar(data[rgbaOffset(x, y, width)], ramp, invert);
       }
       lines.push(line);
     }
