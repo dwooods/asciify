@@ -17,7 +17,7 @@ python3 -m http.server  # serve locally (needed for APIs file:// restricts)
 npx http-server .       # alternative local server
 ```
 
-There is no build/lint step. To run a single test, use Node's built-in filtering, e.g. `node --test --test-name-pattern="packBrailleCell"`.
+There is no build/lint step. `npm install` is needed once to fetch Playwright (the project's only dependency, dev-only, used for the UI test suite) before `npm test` will pass. To run a single test, use Node's built-in filtering, e.g. `node --test --test-name-pattern="packBrailleCell"`.
 
 CI (`.github/workflows/test.yml`) runs `npm test` on every push/PR to `main`. `main` also auto-deploys to GitHub Pages on every push.
 
@@ -30,7 +30,7 @@ The rendering pipeline is split across two plain (non-module) scripts loaded in 
 
 Keep this split intact: any change to the dithering/packing math belongs in `dither.js` (and should get a test in `tests/dither.test.js`); anything touching the UI, events, or rendering orchestration belongs in `script.js`.
 
-`tests/dither.test.js` covers the pixel-quantization math and the bit-to-braille-dot mapping (validated against the actual Unicode Braille Patterns dot numbering) — there is no automated coverage of the UI itself (drag-and-drop, file loading, DOM rendering).
+`tests/dither.test.js` covers the pixel-quantization math and the bit-to-braille-dot mapping (validated against the actual Unicode Braille Patterns dot numbering). `tests/ui.test.js` covers the UI layer — drag-and-drop, paste, file loading and error handling, DOM rendering across all three render modes, exports, and the settings permalink — driven with [Playwright](https://playwright.dev/) directly against `node:test` (not the `@playwright/test` runner), so both suites still run under a single `npm test`.
 
 ## Working process
 

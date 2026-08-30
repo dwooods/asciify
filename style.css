@@ -7,6 +7,8 @@
   --line: #cdd3c9;
   --accent: #2c5f8a;
   --accent-soft: #dde7ee;
+  --danger: #a3372c;
+  --danger-soft: #f6e2df;
   --shadow: rgba(27, 36, 31, 0.08);
 }
 
@@ -19,6 +21,8 @@
     --line: #2b332e;
     --accent: #7bb0da;
     --accent-soft: #223444;
+    --danger: #e0897d;
+    --danger-soft: #3a2320;
     --shadow: rgba(0, 0, 0, 0.35);
   }
 }
@@ -140,6 +144,28 @@ a { color: var(--accent); }
 .dropzone .hint {
   font-size: 0.82rem;
   color: var(--ink-soft);
+}
+
+.loadError {
+  margin-top: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .thumb {

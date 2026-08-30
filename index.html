@@ -26,6 +26,7 @@
             <input type="file" id="filepicker" accept=".png,.jpeg,.jpg,.webp,.gif">
             <div class="hint">Click or drop an image, or paste with Ctrl/Cmd+V</div>
           </div>
+          <div class="loadError" id="loadError" style="display:none;"></div>
           <div class="thumb" id="thumb">
             <img id="thumbImg" alt="Source preview">
             <div class="imageInfo" id="imageInfo"></div>
@@ -88,12 +89,12 @@
 
         <div class="field">
           <label for="width">Width <span class="val">characters</span></label>
-          <input type="number" id="width" value="100" step="10" min="1">
+          <input type="number" id="width" value="100" step="10" min="1" max="2000">
         </div>
 
         <div class="field">
           <label for="height">Height <span class="val">characters</span></label>
-          <input type="number" id="height" step="5" min="1" disabled>
+          <input type="number" id="height" step="5" min="1" max="2000" disabled>
         </div>
 
         <div class="field checkrow">
@@ -123,7 +124,8 @@
           </div>
         </div>
         <div class="empty-state" id="emptyState">Choose an image to render it as braille text art.</div>
-        <div id="output" contenteditable="true" style="display:none;"></div>
+        <div id="output" contenteditable="true" aria-hidden="true" style="display:none;"></div>
+        <div class="visually-hidden" id="srStatus" role="status" aria-live="polite"></div>
       </div>
     </div>
   </div>
