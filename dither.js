@@ -79,6 +79,11 @@
   // gradient, at the cost of not being plain ASCII.
   const asciiRampBlocks = "█▓▒░ ";
 
+  // Two additional user-contributed density ramps, offered as presets
+  // alongside Standard/Blocks.
+  const asciiRampDetailed = '@BR#$PX0woIcv:+!~". ';
+  const asciiRampExtended = "@%#XRVYI|it*+=-;:'.";
+
   // Maps a single greyscale value (0-255) to a character from a density
   // ramp ordered darkest-to-lightest. invert swaps which end of the ramp
   // bright pixels map to, mirroring what "Invert" does for braille dots.
@@ -144,6 +149,8 @@
     packBrailleCell,
     asciiRamp,
     asciiRampBlocks,
+    asciiRampDetailed,
+    asciiRampExtended,
     luminanceToChar,
     sobelGradient,
     edgeChar,
