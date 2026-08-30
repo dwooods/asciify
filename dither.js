@@ -70,7 +70,21 @@
       ((+(data[rgbaOffset(x + 0, y + 0, width)] === targetValue)) << 0);
   }
 
-  const api = { rgbaOffset, KernelDitherer, ditherers, packBrailleCell };
+  // Standard density ramp for classic ASCII-art rendering: characters
+  // ordered from lightest/sparsest (space) to darkest/densest (@), the
+  // same convention widely used across ASCII-art converters.
+  const asciiRamp = " .:-=+*#%@";
+
+  // Maps a single greyscale value (0-255) to a character from a density
+  // ramp ordered light-to-dark. invert swaps which end of the ramp bright
+  // pixels map to, mirroring what the "Invert dots" toggle does for braille.
+  function luminanceToChar(value, ramp, invert) {
+    const v = invert ? 255 - value : value;
+    const idx = Math.min(ramp.length - 1, Math.floor(((255 - v) / 256) * ramp.length));
+    return ramp[idx];
+  }
+
+  const api = { rgbaOffset, KernelDitherer, ditherers, packBrailleCell, asciiRamp, luminanceToChar };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
