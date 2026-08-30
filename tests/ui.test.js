@@ -201,6 +201,47 @@ test("the clear button resets image and output state", async () => {
   assert.equal(charCount, "0");
 });
 
+test("the reset button restores default settings but keeps the loaded image", async () => {
+  await loadTestImage();
+
+  // Tweak a spread of settings across every control type: sliders, selects,
+  // a checkbox, and the palette textarea. Threshold is only visible in
+  // braille/edges mode (not ASCII), so it's set before switching modes.
+  await page.fill("#threshold", "200");
+  await page.dispatchEvent("#threshold", "change");
+  await page.selectOption("#renderMode", "ascii");
+  await page.waitForTimeout(100);
+  await page.selectOption("#charset", "detailed");
+  await page.fill("#brightness", "40");
+  await page.dispatchEvent("#brightness", "change");
+  await page.check("#invert");
+  await page.waitForTimeout(100);
+
+  await page.click("#resetBtn");
+  await page.waitForTimeout(100);
+
+  const [renderMode, charset, palette, brightness, threshold, invert, thumbVisible, charCount] = await Promise.all([
+    page.inputValue("#renderMode"),
+    page.inputValue("#charset"),
+    page.inputValue("#palette"),
+    page.inputValue("#brightness"),
+    page.inputValue("#threshold"),
+    page.isChecked("#invert"),
+    page.isVisible("#thumb"),
+    page.textContent("#charCount"),
+  ]);
+  assert.equal(renderMode, "braille");
+  assert.equal(charset, "standard");
+  assert.equal(palette, "@%#*+=-:. ");
+  assert.equal(brightness, "0");
+  assert.equal(threshold, "127");
+  assert.equal(invert, false);
+  // The image itself must survive a reset - only the adjustments clear.
+  assert.equal(thumbVisible, true);
+  assert.notEqual(charCount, "0");
+  assert.equal(await page.evaluate(() => location.search), "");
+});
+
 test("exports work with mode-correct filenames, and the SVG export is well-formed XML", async () => {
   await loadTestImage();
   await page.selectOption("#renderMode", "ascii");

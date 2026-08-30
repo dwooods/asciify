@@ -273,6 +273,11 @@ input[type="range"] {
 .btn.primary:hover { color: var(--surface); opacity: 0.92; }
 .btn-group { display: flex; gap: 0.5rem; }
 
+#resetBtn {
+  display: block;
+  width: 100%;
+}
+
 #output {
   flex: 1;
   overflow: auto;
