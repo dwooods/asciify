@@ -31,3 +31,15 @@ The rendering pipeline is split across two plain (non-module) scripts loaded in 
 Keep this split intact: any change to the dithering/packing math belongs in `dither.js` (and should get a test in `tests/dither.test.js`); anything touching the UI, events, or rendering orchestration belongs in `script.js`.
 
 `tests/dither.test.js` covers the pixel-quantization math and the bit-to-braille-dot mapping (validated against the actual Unicode Braille Patterns dot numbering) — there is no automated coverage of the UI itself (drag-and-drop, file loading, DOM rendering).
+
+## Working process
+
+For any change beyond a trivial fix, work it like a full engineer + QA pass, not just "make it compile":
+
+1. **Before coding** — name the specific risk this change could hit, not a generic one: does it still work over `file://`? does it handle a 1×1 or non-square image, or a non-image file dropped in? does it change output for an existing dither mode?
+2. **After coding** — verify, don't assume:
+   - Run `npm test`.
+   - Any change touching `render()`, `index.html`, or `style.css` gets a real browser pass (upload an image, cycle dither modes, toggle invert) — "the code looks right" is not verification.
+   - Any change to the dithering/packing math gets a new or updated test in `tests/dither.test.js` — don't ship untested pixel math.
+3. **Before opening a PR** — re-read the diff adversarially: what's the smallest input that breaks this? What existing behavior might silently change? Run `/code-review` as a second pass.
+4. **Flag, don't guess** — if something is ambiguous or trades one thing off against another, say so in the PR description instead of deciding quietly.
