@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { rgbaOffset, KernelDitherer, ditherers, packBrailleCell, asciiRamp, luminanceToChar, sobelGradient, edgeChar } = require("../dither.js");
+const { rgbaOffset, KernelDitherer, ditherers, packBrailleCell, asciiRamp, luminanceToChar, sobelGradient, edgeChar, adjustLevels } = require("../dither.js");
 
 test("rgbaOffset maps (x, y) to the red-channel index in a flat RGBA buffer", () => {
   assert.equal(rgbaOffset(0, 0, 4), 0);
@@ -171,4 +171,27 @@ test("edgeChar returns a space when the gradient is weaker than the threshold", 
   // dx=5, dy=5 normalizes to a magnitude of ~1.25 (see sobelMaxMagnitude);
   // a threshold above that should suppress it to a blank cell.
   assert.equal(edgeChar(5, 5, 2.0), " ");
+});
+
+test("adjustLevels with default settings (0 brightness, 0-255 range) is a no-op", () => {
+  for (const v of [0, 1, 42, 128, 254, 255]) {
+    assert.equal(adjustLevels(v, 0, 0, 255), v);
+  }
+});
+
+test("adjustLevels applies brightness as a flat offset, clamped to 0-255", () => {
+  assert.equal(adjustLevels(100, 50, 0, 255), 150);
+  assert.equal(adjustLevels(240, 50, 0, 255), 255); // clamps above white
+  assert.equal(adjustLevels(10, -50, 0, 255), 0); // clamps below black
+});
+
+test("adjustLevels remaps the black/white point range to 0-255", () => {
+  assert.equal(adjustLevels(64, 0, 64, 192), 0); // at black point -> 0
+  assert.equal(adjustLevels(192, 0, 64, 192), 255); // at white point -> 255
+  assert.equal(adjustLevels(128, 0, 64, 192), 127.5); // midpoint -> midpoint
+});
+
+test("adjustLevels does not divide by zero when black and white points are equal", () => {
+  assert.equal(adjustLevels(50, 0, 100, 100), 0); // below the single point
+  assert.equal(adjustLevels(150, 0, 100, 100), 255); // above the single point
 });

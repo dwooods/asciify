@@ -42,6 +42,21 @@
           </select>
         </div>
 
+        <div class="field">
+          <label for="brightness">Brightness <span class="val" id="brightnessVal">0</span></label>
+          <input type="range" id="brightness" min="-100" max="100" value="0">
+        </div>
+
+        <div class="field">
+          <label for="blackPoint">Black point <span class="val" id="blackPointVal">0</span></label>
+          <input type="range" id="blackPoint" min="0" max="254" value="0">
+        </div>
+
+        <div class="field">
+          <label for="whitePoint">White point <span class="val" id="whitePointVal">255</span></label>
+          <input type="range" id="whitePoint" min="1" max="255" value="255">
+        </div>
+
         <div class="field" id="ditherField">
           <label for="dither">Dither mode</label>
           <select id="dither">
@@ -74,6 +89,16 @@
         <div class="field">
           <label for="width">Width <span class="val">characters</span></label>
           <input type="number" id="width" value="100" step="10" min="1">
+        </div>
+
+        <div class="field">
+          <label for="height">Height <span class="val">characters</span></label>
+          <input type="number" id="height" step="5" min="1" disabled>
+        </div>
+
+        <div class="field checkrow">
+          <input type="checkbox" id="lockAspect" checked>
+          <label for="lockAspect">Lock aspect ratio</label>
         </div>
 
         <div class="field">
