@@ -30,6 +30,14 @@
         </div>
 
         <div class="field">
+          <label for="renderMode">Style</label>
+          <select id="renderMode">
+            <option value="braille">Braille dots</option>
+            <option value="ascii">ASCII characters</option>
+          </select>
+        </div>
+
+        <div class="field" id="ditherField">
           <label for="dither">Dither mode</label>
           <select id="dither">
             <option value="floydSteinberg">Floyd–Steinberg (simple)</option>
@@ -39,7 +47,7 @@
           </select>
         </div>
 
-        <div class="field">
+        <div class="field" id="thresholdField">
           <label for="threshold">Threshold <span class="val" id="thresholdVal">127</span></label>
           <input type="range" id="threshold" min="0" max="254" value="127">
         </div>
@@ -56,7 +64,7 @@
 
         <div class="field checkrow">
           <input type="checkbox" id="invert">
-          <label for="invert">Invert dots</label>
+          <label for="invert">Invert</label>
         </div>
       </div>
 

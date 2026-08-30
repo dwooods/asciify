@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { rgbaOffset, KernelDitherer, ditherers, packBrailleCell } = require("../dither.js");
+const { rgbaOffset, KernelDitherer, ditherers, packBrailleCell, asciiRamp, luminanceToChar } = require("../dither.js");
 
 test("rgbaOffset maps (x, y) to the red-channel index in a flat RGBA buffer", () => {
   assert.equal(rgbaOffset(0, 0, 4), 0);
@@ -96,4 +96,27 @@ test("packBrailleCell maps the bottom-right pixel to braille dot 8 (bit 7)", () 
   const data = new Uint8ClampedArray(width * 4 * 4).fill(255);
   data[rgbaOffset(1, 3, width)] = 0; // only the bottom-right dot is "on"
   assert.equal(packBrailleCell(data, 0, 0, width, 0), 0x2880); // U+2880 = dot 8 only
+});
+
+test("luminanceToChar maps pure white to the lightest character in the ramp", () => {
+  assert.equal(luminanceToChar(255, asciiRamp, false), asciiRamp[0]);
+});
+
+test("luminanceToChar maps pure black to the densest character in the ramp", () => {
+  assert.equal(luminanceToChar(0, asciiRamp, false), asciiRamp[asciiRamp.length - 1]);
+});
+
+test("luminanceToChar invert swaps which end of the ramp bright/dark pixels map to", () => {
+  assert.equal(luminanceToChar(255, asciiRamp, true), asciiRamp[asciiRamp.length - 1]);
+  assert.equal(luminanceToChar(0, asciiRamp, true), asciiRamp[0]);
+});
+
+test("luminanceToChar is monotonic: darker values never map to a lighter ramp index", () => {
+  let lastIndex = -1;
+  for (let value = 255; value >= 0; value -= 17) {
+    const char = luminanceToChar(value, asciiRamp, false);
+    const index = asciiRamp.indexOf(char);
+    assert.ok(index >= lastIndex, `value ${value} produced index ${index}, expected >= ${lastIndex}`);
+    lastIndex = index;
+  }
 });

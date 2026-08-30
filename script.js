@@ -6,15 +6,21 @@
 (function () {
   "use strict";
 
-  const { ditherers, packBrailleCell } = window.AsciifyDither;
+  const { rgbaOffset, ditherers, packBrailleCell, asciiRamp, luminanceToChar } = window.AsciifyDither;
 
   // Braille cell is 2 dots wide, 4 dots tall.
   const asciiXDots = 2, asciiYDots = 4;
+
+  // Classic ASCII-art characters are roughly twice as tall as wide, so each
+  // character's sampled block is shrunk vertically by this factor relative
+  // to a square block - otherwise the output looks vertically stretched.
+  const asciiCharAspect = 0.55;
 
   // Matches the #output font stack in style.css, so PNG/SVG exports render
   // the same glyphs the on-screen preview already proved out.
   const exportFontFamily = 'ui-monospace, "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace';
 
+  let renderMode = "braille";
   let dithererName = "floydSteinberg";
   let invert = false;
   let threshold = 127;
@@ -27,6 +33,9 @@
 
   const $ = (sel) => document.querySelector(sel);
   const filepicker = $("#filepicker");
+  const renderModeSel = $("#renderMode");
+  const ditherField = $("#ditherField");
+  const thresholdField = $("#thresholdField");
   const ditherSel = $("#dither");
   const thresholdInput = $("#threshold");
   const thresholdVal = $("#thresholdVal");
@@ -95,6 +104,15 @@
     }
   });
 
+  renderModeSel.addEventListener("change", function () {
+    if (this.value === renderMode) return;
+    renderMode = this.value;
+    const isBraille = renderMode === "braille";
+    ditherField.style.display = isBraille ? "" : "none";
+    thresholdField.style.display = isBraille ? "" : "none";
+    render();
+  });
+
   ditherSel.addEventListener("change", function () {
     if (this.value === dithererName) return;
     dithererName = this.value;
@@ -145,9 +163,13 @@
     URL.revokeObjectURL(url);
   }
 
+  function exportFilename(extension) {
+    return `${renderMode === "ascii" ? "ascii" : "braille"}-art.${extension}`;
+  }
+
   downloadBtn.addEventListener("click", function () {
     if (!ascii) return;
-    downloadBlob(new Blob([ascii], { type: "text/plain;charset=utf-8" }), "braille-art.txt");
+    downloadBlob(new Blob([ascii], { type: "text/plain;charset=utf-8" }), exportFilename("txt"));
   });
 
   const exportFontSize = 16;
@@ -197,7 +219,7 @@
 
   downloadPngBtn.addEventListener("click", function () {
     if (!ascii) return;
-    renderAsciiToCanvas().toBlob((blob) => downloadBlob(blob, "braille-art.png"), "image/png");
+    renderAsciiToCanvas().toBlob((blob) => downloadBlob(blob, exportFilename("png")), "image/png");
   });
 
   function escapeXml(text) {
@@ -222,12 +244,24 @@
 </svg>
 `;
 
-    downloadBlob(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }), "braille-art.svg");
+    downloadBlob(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }), exportFilename("svg"));
   });
 
-  function render() {
-    if (!image) return;
+  // Shared tail for both render modes: takes the finished lines of
+  // characters, joins them into the copy/download text, and paints the
+  // on-screen preview.
+  function finalizeOutput(lines) {
+    const asciiHtml = lines.map((line) => line.split("").map((c) => `<span>${c}</span>`).join(""));
 
+    ascii = lines.join("\n");
+    charCount.textContent = ascii.length.toLocaleString();
+
+    emptyState.style.display = "none";
+    output.style.display = "block";
+    output.innerHTML = asciiHtml.join("<br>");
+  }
+
+  function renderBrailleMode() {
     // Each output character is one braille cell (asciiXDots x asciiYDots
     // pixels), so the canvas is sized in actual pixels at that multiple of
     // the requested character width/height.
@@ -251,8 +285,7 @@
     const dithered = ditherer.dither(greyPixels, threshold);
     const targetValue = invert ? 255 : 0;
 
-    const asciiText = [];
-    const asciiHtml = [];
+    const lines = [];
 
     // Walk the dithered bitmap one braille cell at a time (asciiXDots wide,
     // asciiYDots tall) and pack each cell into a single braille codepoint.
@@ -261,16 +294,49 @@
       for (let x = 0; x < canvas.width; x += asciiXDots) {
         line.push(packBrailleCell(dithered.data, x, y, canvas.width, targetValue));
       }
-      const lineChars = String.fromCharCode.apply(String, line);
-      asciiText.push(lineChars);
-      asciiHtml.push(lineChars.split("").map((c) => `<span>${c}</span>`).join(""));
+      lines.push(String.fromCharCode.apply(String, line));
     }
 
-    ascii = asciiText.join("\n");
-    charCount.textContent = ascii.length.toLocaleString();
+    finalizeOutput(lines);
+  }
 
-    emptyState.style.display = "none";
-    output.style.display = "block";
-    output.innerHTML = asciiHtml.join("<br>");
+  function renderAsciiMode() {
+    // One output character = one sampled pixel: the source image is drawn
+    // scaled directly down to the character grid's resolution, so the
+    // browser's own image downscaling does the per-cell brightness
+    // averaging instead of a hand-rolled sampling loop.
+    const asciiHeight = Math.max(1, Math.round(asciiWidth * (image.height / image.width) * asciiCharAspect));
+    canvas.width = asciiWidth;
+    canvas.height = asciiHeight;
+
+    context.globalCompositeOperation = "source-over";
+    context.fillStyle = "white";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    context.globalCompositeOperation = "luminosity";
+    context.imageSmoothingEnabled = true;
+    if ("imageSmoothingQuality" in context) context.imageSmoothingQuality = "high";
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+    const lines = [];
+    for (let y = 0; y < canvas.height; y++) {
+      let line = "";
+      for (let x = 0; x < canvas.width; x++) {
+        line += luminanceToChar(data[rgbaOffset(x, y, canvas.width)], asciiRamp, invert);
+      }
+      lines.push(line);
+    }
+
+    finalizeOutput(lines);
+  }
+
+  function render() {
+    if (!image) return;
+    if (renderMode === "ascii") {
+      renderAsciiMode();
+    } else {
+      renderBrailleMode();
+    }
   }
 })();
