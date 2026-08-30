@@ -79,6 +79,18 @@ test("loads with the empty state visible and output hidden", async () => {
   assert.equal(await page.isVisible("#output"), false);
 });
 
+test("a fresh load with no query string shows the fields correct for the default braille mode", async () => {
+  // Regression test: restoreSettingsFromUrl() used to bail out entirely
+  // when there was no query string, skipping the applyRenderModeVisibility()
+  // call inside it - so a first-ever visit showed every mode's fields at
+  // once (dither, threshold, character set, and palette all visible)
+  // until the user switched modes and back.
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("ditherField")).display), "block");
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("thresholdField")).display), "block");
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("charsetField")).display), "none");
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("paletteField")).display), "none");
+});
+
 test("uploading a valid image renders braille output by default", async () => {
   await loadTestImage();
   assert.equal(await page.isVisible("#output"), true);
