@@ -46,15 +46,16 @@ git push -u origin main
 
 ## Testing
 
-The dithering kernels and braille-packing logic live in `dither.js`, a small dependency-free module (loaded as `window.AsciifyDither` in the browser, `require()`-able in Node) so they can be unit tested without a build step:
+The dithering kernels and braille-packing logic live in `dither.js`, a small dependency-free module (loaded as `window.AsciifyDither` in the browser, `require()`-able in Node) so they can be unit tested without a build step. The UI layer (drag-and-drop, file loading, rendering to the DOM, exports, the settings permalink) is covered separately with [Playwright](https://playwright.dev/) — the project's only dependency, dev-only:
 
 ```bash
+npm install   # first time only, fetches Playwright
 npm test
 # or directly:
 node --test
 ```
 
-This covers the pixel-quantization math and the bit-to-braille-dot mapping, not the UI itself — there's no automated coverage for drag-and-drop, file loading, or rendering to the DOM.
+`tests/dither.test.js` covers the pixel-quantization math and the bit-to-braille-dot mapping; `tests/ui.test.js` drives a real headless browser against the app to cover the DOM/UI wiring.
 
 ## How it works
 
