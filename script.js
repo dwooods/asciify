@@ -6,9 +6,9 @@
 (function () {
   "use strict";
 
-  const { rgbaOffset, ditherers, packBrailleCell, asciiRamp, asciiRampBlocks, luminanceToChar, sobelGradient, edgeChar, adjustLevels } = window.AsciifyDither;
+  const { rgbaOffset, ditherers, packBrailleCell, asciiRamp, asciiRampBlocks, asciiRampDetailed, asciiRampExtended, luminanceToChar, sobelGradient, edgeChar, adjustLevels } = window.AsciifyDither;
 
-  const charsetPresets = { standard: asciiRamp, blocks: asciiRampBlocks };
+  const charsetPresets = { standard: asciiRamp, blocks: asciiRampBlocks, detailed: asciiRampDetailed, extended: asciiRampExtended };
 
   // Braille cell is 2 dots wide, 4 dots tall.
   const asciiXDots = 2, asciiYDots = 4;
