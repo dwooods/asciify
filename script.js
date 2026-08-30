@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-  const { rgbaOffset, ditherers, packBrailleCell, asciiRamp, luminanceToChar } = window.AsciifyDither;
+  const { rgbaOffset, ditherers, packBrailleCell, asciiRamp, luminanceToChar, sobelGradient, edgeChar } = window.AsciifyDither;
 
   // Braille cell is 2 dots wide, 4 dots tall.
   const asciiXDots = 2, asciiYDots = 4;
@@ -36,6 +36,7 @@
   const renderModeSel = $("#renderMode");
   const ditherField = $("#ditherField");
   const thresholdField = $("#thresholdField");
+  const invertField = $("#invertField");
   const ditherSel = $("#dither");
   const thresholdInput = $("#threshold");
   const thresholdVal = $("#thresholdVal");
@@ -107,9 +108,14 @@
   renderModeSel.addEventListener("change", function () {
     if (this.value === renderMode) return;
     renderMode = this.value;
-    const isBraille = renderMode === "braille";
-    ditherField.style.display = isBraille ? "" : "none";
-    thresholdField.style.display = isBraille ? "" : "none";
+    // Dither mode only means anything for braille output. Threshold applies
+    // to braille (dither cutoff) and edges (edge sensitivity), but not to
+    // ASCII's continuous brightness ramp. Invert only makes sense where a
+    // pixel maps to one of two polarities (braille dots, the ASCII ramp) -
+    // edge detection is polarity-symmetric, so it has no effect there.
+    ditherField.style.display = renderMode === "braille" ? "" : "none";
+    thresholdField.style.display = renderMode === "ascii" ? "none" : "";
+    invertField.style.display = renderMode === "edges" ? "none" : "";
     render();
   });
 
@@ -164,7 +170,7 @@
   }
 
   function exportFilename(extension) {
-    return `${renderMode === "ascii" ? "ascii" : "braille"}-art.${extension}`;
+    return `${renderMode}-art.${extension}`;
   }
 
   downloadBtn.addEventListener("click", function () {
@@ -300,14 +306,14 @@
     finalizeOutput(lines);
   }
 
-  function renderAsciiMode() {
-    // One output character = one sampled pixel: the source image is drawn
-    // scaled directly down to the character grid's resolution, so the
-    // browser's own image downscaling does the per-cell brightness
-    // averaging instead of a hand-rolled sampling loop.
-    const asciiHeight = Math.max(1, Math.round(asciiWidth * (image.height / image.width) * asciiCharAspect));
+  // Shared setup for ASCII and edge-detection modes: one output character
+  // = one sampled pixel, so the source image is drawn scaled directly down
+  // to the character grid's resolution and the browser's own image
+  // downscaling does the per-cell brightness averaging for us.
+  function prepareCharacterGrid() {
+    const height = Math.max(1, Math.round(asciiWidth * (image.height / image.width) * asciiCharAspect));
     canvas.width = asciiWidth;
-    canvas.height = asciiHeight;
+    canvas.height = height;
 
     context.globalCompositeOperation = "source-over";
     context.fillStyle = "white";
@@ -318,16 +324,36 @@
     if ("imageSmoothingQuality" in context) context.imageSmoothingQuality = "high";
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
-    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+    return context.getImageData(0, 0, canvas.width, canvas.height);
+  }
+
+  function renderAsciiMode() {
+    const { data, width, height } = prepareCharacterGrid();
     const lines = [];
-    for (let y = 0; y < canvas.height; y++) {
+    for (let y = 0; y < height; y++) {
       let line = "";
-      for (let x = 0; x < canvas.width; x++) {
-        line += luminanceToChar(data[rgbaOffset(x, y, canvas.width)], asciiRamp, invert);
+      for (let x = 0; x < width; x++) {
+        line += luminanceToChar(data[rgbaOffset(x, y, width)], asciiRamp, invert);
       }
       lines.push(line);
     }
+    finalizeOutput(lines);
+  }
 
+  function renderEdgesMode() {
+    // Reuses the "Threshold" slider as edge sensitivity: a Sobel gradient's
+    // magnitude is normalized to roughly the same 0-255 range that slider
+    // already covers for the dithering threshold (see sobelMaxMagnitude).
+    const { data, width, height } = prepareCharacterGrid();
+    const lines = [];
+    for (let y = 0; y < height; y++) {
+      let line = "";
+      for (let x = 0; x < width; x++) {
+        const { dx, dy } = sobelGradient(data, x, y, width, height);
+        line += edgeChar(dx, dy, threshold);
+      }
+      lines.push(line);
+    }
     finalizeOutput(lines);
   }
 
@@ -335,6 +361,8 @@
     if (!image) return;
     if (renderMode === "ascii") {
       renderAsciiMode();
+    } else if (renderMode === "edges") {
+      renderEdgesMode();
     } else {
       renderBrailleMode();
     }

@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { rgbaOffset, KernelDitherer, ditherers, packBrailleCell, asciiRamp, luminanceToChar } = require("../dither.js");
+const { rgbaOffset, KernelDitherer, ditherers, packBrailleCell, asciiRamp, luminanceToChar, sobelGradient, edgeChar } = require("../dither.js");
 
 test("rgbaOffset maps (x, y) to the red-channel index in a flat RGBA buffer", () => {
   assert.equal(rgbaOffset(0, 0, 4), 0);
@@ -119,4 +119,55 @@ test("luminanceToChar is monotonic: darker values never map to a lighter ramp in
     assert.ok(index >= lastIndex, `value ${value} produced index ${index}, expected >= ${lastIndex}`);
     lastIndex = index;
   }
+});
+
+function makeImage(width, height, valueAt) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const v = valueAt(x, y);
+      const o = rgbaOffset(x, y, width);
+      data[o] = v;
+      data[o + 1] = v;
+      data[o + 2] = v;
+      data[o + 3] = 255;
+    }
+  }
+  return data;
+}
+
+test("sobelGradient finds a vertical edge (brightness changes along x, constant along y)", () => {
+  const img = makeImage(9, 9, (x) => (x < 4 ? 0 : 255));
+  const { dx, dy } = sobelGradient(img, 4, 4, 9, 9);
+  assert.ok(dx > 0);
+  assert.equal(dy, 0);
+});
+
+test("sobelGradient finds a horizontal edge (brightness changes along y, constant along x)", () => {
+  const img = makeImage(9, 9, (x, y) => (y < 4 ? 0 : 255));
+  const { dx, dy } = sobelGradient(img, 4, 4, 9, 9);
+  assert.equal(dx, 0);
+  assert.ok(dy > 0);
+});
+
+test("edgeChar maps a horizontal gradient to a vertical line character", () => {
+  assert.equal(edgeChar(1020, 0, 0.1), "|");
+});
+
+test("edgeChar maps a vertical gradient to a horizontal line character", () => {
+  assert.equal(edgeChar(0, 1020, 0.1), "-");
+});
+
+test("edgeChar maps a dark-upper-left/light-lower-right diagonal to a backslash", () => {
+  assert.equal(edgeChar(765, 765, 0.1), "\\");
+});
+
+test("edgeChar maps a dark-lower-left/light-upper-right diagonal to a forward slash", () => {
+  assert.equal(edgeChar(765, -765, 0.1), "/");
+});
+
+test("edgeChar returns a space when the gradient is weaker than the threshold", () => {
+  // dx=5, dy=5 normalizes to a magnitude of ~1.25 (see sobelMaxMagnitude);
+  // a threshold above that should suppress it to a blank cell.
+  assert.equal(edgeChar(5, 5, 2.0), " ");
 });

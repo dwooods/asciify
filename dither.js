@@ -84,7 +84,54 @@
     return ramp[idx];
   }
 
-  const api = { rgbaOffset, KernelDitherer, ditherers, packBrailleCell, asciiRamp, luminanceToChar };
+  // Standard 3x3 Sobel operator: estimates the local brightness gradient
+  // (dx, dy) at (x, y) from a greyscale RGBA buffer. Out-of-bounds reads
+  // clamp to the nearest edge pixel rather than needing a padded buffer.
+  function sobelGradient(data, x, y, width, height) {
+    const sample = (sx, sy) => {
+      const cx = Math.min(width - 1, Math.max(0, sx));
+      const cy = Math.min(height - 1, Math.max(0, sy));
+      return data[rgbaOffset(cx, cy, width)];
+    };
+    const dx =
+      -sample(x - 1, y - 1) + sample(x + 1, y - 1) +
+      -2 * sample(x - 1, y) + 2 * sample(x + 1, y) +
+      -sample(x - 1, y + 1) + sample(x + 1, y + 1);
+    const dy =
+      -sample(x - 1, y - 1) - 2 * sample(x, y - 1) - sample(x + 1, y - 1) +
+      sample(x - 1, y + 1) + 2 * sample(x, y + 1) + sample(x + 1, y + 1);
+    return { dx, dy };
+  }
+
+  // A 3x3 Sobel kernel's magnitude maxes out at 4*255*sqrt(2); dividing by
+  // that keeps the normalized magnitude comparable to the 0-255 threshold
+  // range the UI already uses for the (unrelated) dithering threshold.
+  const sobelMaxMagnitude = 4 * Math.SQRT2;
+
+  // Buckets a gradient vector into one of four line-drawing characters
+  // representing the edge's orientation (edges run perpendicular to the
+  // gradient), or a space when the gradient is too weak to count as an edge.
+  function edgeChar(dx, dy, threshold) {
+    const magnitude = Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
+    if (magnitude <= threshold) return " ";
+    let angle = (Math.atan2(dy, dx) * 180) / Math.PI; // gradient direction, -180..180
+    angle = ((angle % 180) + 180) % 180; // fold to 0..180 - edge orientation is direction-agnostic
+    if (angle < 22.5 || angle >= 157.5) return "|"; // gradient ~horizontal -> edge runs vertical
+    if (angle < 67.5) return "\\";
+    if (angle < 112.5) return "-"; // gradient ~vertical -> edge runs horizontal
+    return "/";
+  }
+
+  const api = {
+    rgbaOffset,
+    KernelDitherer,
+    ditherers,
+    packBrailleCell,
+    asciiRamp,
+    luminanceToChar,
+    sobelGradient,
+    edgeChar,
+  };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

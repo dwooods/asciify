@@ -34,6 +34,7 @@
           <select id="renderMode">
             <option value="braille">Braille dots</option>
             <option value="ascii">ASCII characters</option>
+            <option value="edges">Line art (edges)</option>
           </select>
         </div>
 
@@ -62,7 +63,7 @@
           <input type="range" id="fontSize" min="4" max="24" value="10">
         </div>
 
-        <div class="field checkrow">
+        <div class="field checkrow" id="invertField">
           <input type="checkbox" id="invert">
           <label for="invert">Invert</label>
         </div>
