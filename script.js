@@ -124,6 +124,9 @@
   function render() {
     if (!image) return;
 
+    // Each output character is one braille cell (asciiXDots x asciiYDots
+    // pixels), so the canvas is sized in actual pixels at that multiple of
+    // the requested character width/height.
     const asciiHeight = Math.ceil((asciiWidth * asciiXDots * (image.height / image.width)) / asciiYDots);
     canvas.width = asciiWidth * asciiXDots;
     canvas.height = asciiHeight * asciiYDots;
@@ -132,6 +135,10 @@
     context.fillStyle = "white";
     context.fillRect(0, 0, canvas.width, canvas.height);
 
+    // "luminosity" blend mode over a white background is a one-line trick
+    // for getting a perceptual greyscale read of the image: it composites
+    // using the source's luminance while keeping white's hue/saturation,
+    // which collapses to R=G=B equal to the image's luminance at each pixel.
     context.globalCompositeOperation = "luminosity";
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
@@ -143,6 +150,8 @@
     const asciiText = [];
     const asciiHtml = [];
 
+    // Walk the dithered bitmap one braille cell at a time (asciiXDots wide,
+    // asciiYDots tall) and pack each cell into a single braille codepoint.
     for (let y = 0; y < canvas.height; y += asciiYDots) {
       const line = [];
       for (let x = 0; x < canvas.width; x += asciiXDots) {
