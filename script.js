@@ -6,59 +6,10 @@
 (function () {
   "use strict";
 
-  function rgbaOffset(x, y, width) {
-    return width * 4 * y + 4 * x;
-  }
-
-  class KernelDitherer {
-    constructor(origin, numerators, denominator) {
-      this.origin = origin;
-      this.numerators = numerators;
-      this.denominator = denominator || 1;
-    }
-    weights() {
-      const weights = [];
-      const [originX, originY] = this.origin;
-      for (let y = 0; y < this.numerators.length; y++) {
-        for (let x = 0; x < this.numerators[y].length; x++) {
-          weights.push([x - originX, y - originY, this.numerators[y][x] / this.denominator]);
-        }
-      }
-      return weights;
-    }
-    dither(input, threshold) {
-      const output = new ImageData(input.width, input.height);
-      const weights = this.weights();
-      for (let y = 0; y < input.height; y++) {
-        for (let x = 0; x < input.width; x++) {
-          const offset = rgbaOffset(x, y, input.width);
-          const greyPixel = input.data[offset];
-          const value = greyPixel > threshold ? 255 : 0;
-          output.data.set([value, value, value, 255], offset);
-          const error = greyPixel - value;
-          for (const [wx, wy, weight] of weights) {
-            if (weight === 0) continue;
-            const o = rgbaOffset(x + wx, y + wy, input.width);
-            const v = input.data[o];
-            if (typeof v === "number" && o >= 0) {
-              input.data[o] = v + error * weight;
-            }
-          }
-        }
-      }
-      return output;
-    }
-  }
+  const { ditherers, packBrailleCell } = window.AsciifyDither;
 
   // Braille cell is 2 dots wide, 4 dots tall.
   const asciiXDots = 2, asciiYDots = 4;
-
-  const ditherers = {
-    threshold: new KernelDitherer([0, 0], [], 1),
-    floydSteinberg: new KernelDitherer([1, 0], [[0, 0, 7], [3, 5, 1]], 16),
-    stucki: new KernelDitherer([2, 0], [[0, 0, 0, 8, 4], [2, 4, 8, 4, 2], [1, 2, 4, 2, 1]], 42),
-    atkinson: new KernelDitherer([1, 0], [[0, 0, 1, 1], [1, 1, 1, 0], [0, 1, 0, 0]], 8),
-  };
 
   let dithererName = "floydSteinberg";
   let invert = false;
@@ -195,19 +146,7 @@
     for (let y = 0; y < canvas.height; y += asciiYDots) {
       const line = [];
       for (let x = 0; x < canvas.width; x += asciiXDots) {
-        const d = dithered.data;
-        const w = canvas.width;
-        line.push(
-          10240 +
-          ((+(d[rgbaOffset(x + 1, y + 3, w)] === targetValue)) << 7) +
-          ((+(d[rgbaOffset(x + 0, y + 3, w)] === targetValue)) << 6) +
-          ((+(d[rgbaOffset(x + 1, y + 2, w)] === targetValue)) << 5) +
-          ((+(d[rgbaOffset(x + 1, y + 1, w)] === targetValue)) << 4) +
-          ((+(d[rgbaOffset(x + 1, y + 0, w)] === targetValue)) << 3) +
-          ((+(d[rgbaOffset(x + 0, y + 2, w)] === targetValue)) << 2) +
-          ((+(d[rgbaOffset(x + 0, y + 1, w)] === targetValue)) << 1) +
-          ((+(d[rgbaOffset(x + 0, y + 0, w)] === targetValue)) << 0)
-        );
+        line.push(packBrailleCell(dithered.data, x, y, canvas.width, targetValue));
       }
       const lineChars = String.fromCharCode.apply(String, line);
       asciiText.push(lineChars);
