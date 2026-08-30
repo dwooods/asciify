@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Asciify — image to braille text art</title>
+  <meta name="description" content="Convert any image into Unicode braille dot-matrix text art, right in your browser.">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Asciify</h1>
+        <p class="tag">Turn any image into dot-matrix text art using the Unicode braille block — dithered, resizable, copy-pasteable anywhere monospace text works.</p>
+      </div>
+      <p class="credit">Algorithm ported from <a href="https://lach.la" target="_blank" rel="noopener">Lachlan Arthur</a>'s <a href="https://github.com/LachlanArthur/Braille-ASCII-Art" target="_blank" rel="noopener">Braille-ASCII-Art</a> (MIT)</p>
+    </header>
+
+    <div class="layout">
+      <div class="panel">
+        <div class="field">
+          <label for="filepicker">Image</label>
+          <div class="dropzone" id="dropzone">
+            <input type="file" id="filepicker" accept=".png,.jpeg,.jpg,.webp,.gif">
+            <div class="hint">Click or drop an image</div>
+          </div>
+          <div class="thumb" id="thumb"><img id="thumbImg" alt="Source preview"></div>
+        </div>
+
+        <div class="field">
+          <label for="dither">Dither mode</label>
+          <select id="dither">
+            <option value="floydSteinberg">Floyd–Steinberg (simple)</option>
+            <option value="stucki">Stucki (edge contrast)</option>
+            <option value="atkinson">Atkinson (high contrast)</option>
+            <option value="threshold">Threshold (no dither)</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="threshold">Threshold <span class="val" id="thresholdVal">127</span></label>
+          <input type="range" id="threshold" min="0" max="254" value="127">
+        </div>
+
+        <div class="field">
+          <label for="width">Width <span class="val">characters</span></label>
+          <input type="number" id="width" value="100" step="10" min="1">
+        </div>
+
+        <div class="field">
+          <label for="fontSize">Preview size <span class="val" id="fontSizeVal">10px</span></label>
+          <input type="range" id="fontSize" min="4" max="24" value="10">
+        </div>
+
+        <div class="field checkrow">
+          <input type="checkbox" id="invert">
+          <label for="invert">Invert dots</label>
+        </div>
+      </div>
+
+      <div class="output-panel">
+        <div class="output-bar">
+          <span class="count"><span id="charCount">0</span> characters</span>
+          <div class="btn-group">
+            <button class="btn" id="downloadBtn">Download .txt</button>
+            <button class="btn primary" id="copyBtn">Copy</button>
+          </div>
+        </div>
+        <div class="empty-state" id="emptyState">Choose an image to render it as braille text art.</div>
+        <div id="output" contenteditable="true" style="display:none;"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
