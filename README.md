@@ -44,6 +44,18 @@ git branch -M main
 git push -u origin main
 ```
 
+## Testing
+
+The dithering kernels and braille-packing logic live in `dither.js`, a small dependency-free module (loaded as `window.AsciifyDither` in the browser, `require()`-able in Node) so they can be unit tested without a build step:
+
+```bash
+npm test
+# or directly:
+node --test
+```
+
+This covers the pixel-quantization math and the bit-to-braille-dot mapping, not the UI itself — there's no automated coverage for drag-and-drop, file loading, or rendering to the DOM.
+
 ## How it works
 
 - The source image is drawn onto a hidden `<canvas>` at `width*2 × height*4` pixels (each output character is one braille cell, 2 dots wide by 4 dots tall).

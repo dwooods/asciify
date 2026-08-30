@@ -1,0 +1,8 @@
+{
+  "name": "asciify",
+  "private": true,
+  "description": "Convert images into Unicode braille dot-matrix text art in the browser.",
+  "scripts": {
+    "test": "node --test"
+  }
+}
