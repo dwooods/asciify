@@ -41,6 +41,23 @@
   let image = null;
   let ascii = "";
 
+  // Mirrors the initial values above, so "Reset settings" can restore them
+  // without touching the loaded image. Preview size isn't included - like
+  // the permalink, it's a local display preference, not part of the art.
+  const DEFAULTS = {
+    renderMode: "braille",
+    dithererName: "floydSteinberg",
+    invert: false,
+    threshold: 127,
+    asciiWidth: 100,
+    lockAspect: true,
+    manualHeight: 50,
+    brightness: 0,
+    blackPoint: 0,
+    whitePoint: 255,
+    palette: asciiRamp,
+  };
+
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d", { willReadFrequently: true });
 
@@ -69,6 +86,7 @@
   const fontSizeInput = $("#fontSize");
   const fontSizeVal = $("#fontSizeVal");
   const invertInput = $("#invert");
+  const resetBtn = $("#resetBtn");
   const output = $("#output");
   const emptyState = $("#emptyState");
   const charCount = $("#charCount");
@@ -310,6 +328,58 @@
     invert = this.checked;
     updateUrl();
     render();
+  });
+
+  // Restores every adjustment to its default, keeping the loaded image (if
+  // any) in place, so a heavily-tweaked image can be started over cleanly
+  // without re-uploading it.
+  resetBtn.addEventListener("click", function () {
+    renderMode = DEFAULTS.renderMode;
+    renderModeSel.value = renderMode;
+    applyRenderModeVisibility();
+
+    dithererName = DEFAULTS.dithererName;
+    ditherSel.value = dithererName;
+
+    paletteInput.value = DEFAULTS.palette;
+    syncCharsetSelectFromPalette();
+
+    threshold = DEFAULTS.threshold;
+    thresholdInput.value = threshold;
+    thresholdVal.textContent = threshold;
+
+    asciiWidth = DEFAULTS.asciiWidth;
+    widthInput.value = asciiWidth;
+
+    lockAspect = DEFAULTS.lockAspect;
+    lockAspectInput.checked = lockAspect;
+    heightInput.disabled = lockAspect;
+    manualHeight = DEFAULTS.manualHeight;
+    heightInput.value = manualHeight;
+
+    brightness = DEFAULTS.brightness;
+    brightnessInput.value = brightness;
+    brightnessVal.textContent = brightness;
+
+    blackPoint = DEFAULTS.blackPoint;
+    blackPointInput.value = blackPoint;
+    blackPointVal.textContent = blackPoint;
+
+    whitePoint = DEFAULTS.whitePoint;
+    whitePointInput.value = whitePoint;
+    whitePointVal.textContent = whitePoint;
+
+    invert = DEFAULTS.invert;
+    invertInput.checked = invert;
+
+    updateUrl();
+    if (image) {
+      // finalizeOutput() announces the fresh render itself, which is more
+      // useful than a generic "reset" message once there's real output.
+      render();
+    } else {
+      srStatus.textContent = "Settings reset to defaults.";
+    }
   });
 
   copyBtn.addEventListener("click", function () {
