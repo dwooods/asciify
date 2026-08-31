@@ -142,6 +142,123 @@
     return Math.max(0, Math.min(255, remapped));
   }
 
+  // --- Auto-suggested settings ---------------------------------------
+  // Heuristics for guessing reasonable starting settings from an image's
+  // own greyscale statistics, so picking a style/threshold isn't pure
+  // trial and error. These are first-pass constants, not yet calibrated
+  // against a range of real photos - expect to retune them (see
+  // suggestRenderMode/suggestSettingsForMode) once real images are tried.
+
+  // Builds a 256-bucket luminance histogram from a greyscale RGBA buffer
+  // (R=G=B after the luminosity composite already applied upstream).
+  function computeHistogram(data, width, height) {
+    const histogram = new Array(256).fill(0);
+    const total = width * height;
+    for (let i = 0; i < total; i++) histogram[data[i * 4]]++;
+    return histogram;
+  }
+
+  // The luminance value below which `percentile`% of pixels fall - the
+  // standard input to an "auto levels" contrast stretch.
+  function histogramPercentile(histogram, percentile) {
+    const total = histogram.reduce((sum, count) => sum + count, 0);
+    if (total === 0) return 0;
+    const target = (percentile / 100) * total;
+    let cumulative = 0;
+    for (let value = 0; value < 256; value++) {
+      cumulative += histogram[value];
+      if (cumulative >= target) return value;
+    }
+    return 255;
+  }
+
+  // Aggregate greyscale stats used to auto-suggest render settings:
+  // overall brightness and spread (from the histogram), and edge density
+  // (mean normalized Sobel gradient magnitude - see sobelMaxMagnitude) as
+  // a proxy for how much of the image is sharp shapes vs smooth/flat
+  // regions.
+  function computeImageStats(data, width, height) {
+    const histogram = computeHistogram(data, width, height);
+    const total = width * height;
+
+    let sum = 0;
+    for (let value = 0; value < 256; value++) sum += value * histogram[value];
+    const mean = sum / total;
+
+    let sumSquaredDiff = 0;
+    for (let value = 0; value < 256; value++) {
+      sumSquaredDiff += histogram[value] * (value - mean) * (value - mean);
+    }
+    const stdev = Math.sqrt(sumSquaredDiff / total);
+
+    let edgeSum = 0;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const { dx, dy } = sobelGradient(data, x, y, width, height);
+        edgeSum += Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
+      }
+    }
+
+    return {
+      mean,
+      stdev,
+      edgeDensity: edgeSum / total,
+      p2: histogramPercentile(histogram, 2),
+      p98: histogramPercentile(histogram, 98),
+    };
+  }
+
+  // Auto-levels: stretches the image's actual 2nd-98th percentile range to
+  // fill 0-255, so a low-contrast (hazy, backlit, flat-lit) photo doesn't
+  // waste most of the dithering/ramp range on tones it never uses. Falls
+  // back to a minimum 1-value gap rather than a degenerate zero-width range
+  // (e.g. a solid-color image, where p2 === p98).
+  function suggestLevels(stats) {
+    const blackPoint = Math.max(0, Math.min(254, stats.p2));
+    const whitePoint = Math.max(blackPoint + 1, Math.min(255, stats.p98));
+    return { blackPoint, whitePoint };
+  }
+
+  // Picks the render mode most likely to suit an image from its measured
+  // stats: strong, plentiful edges suit line art; flat, low-contrast images
+  // with few edges suit ASCII's continuous shading ramp; everything else
+  // falls back to braille, the safest general-purpose choice.
+  function suggestRenderMode(stats) {
+    if (stats.edgeDensity > 40) return "edges";
+    if (stats.edgeDensity < 15 && stats.stdev < 50) return "ascii";
+    return "braille";
+  }
+
+  // Full settings suggestion for one specific render mode, so all three
+  // can be computed and previewed side by side regardless of which one
+  // suggestRenderMode() ends up recommending as the default.
+  function suggestSettingsForMode(mode, stats) {
+    const levels = suggestLevels(stats);
+    if (mode === "edges") {
+      // Aims the edge-sensitivity threshold at roughly 60% of the image's
+      // own average edge strength - low enough to keep real detail, high
+      // enough to drop noise from flatter regions.
+      const threshold = Math.max(10, Math.min(200, Math.round(stats.edgeDensity * 0.6)));
+      return { renderMode: "edges", threshold, ...levels };
+    }
+    if (mode === "ascii") {
+      // A richer character ramp earns its keep on images with real tonal
+      // gradient to render; a flatter image looks fine with the standard one.
+      const charsetKey = stats.stdev > 30 ? "extended" : "standard";
+      return { renderMode: "ascii", charsetKey, ...levels };
+    }
+    // Punchier Atkinson dithering suits higher-contrast images; smoother
+    // Floyd-Steinberg suits everything else.
+    const dithererName = stats.stdev > 60 ? "atkinson" : "floydSteinberg";
+    return { renderMode: "braille", dithererName, threshold: 127, ...levels };
+  }
+
+  // Convenience: the single best-guess settings for an image, combining
+  // suggestRenderMode() with suggestSettingsForMode() for that mode.
+  function suggestSettings(stats) {
+    return suggestSettingsForMode(suggestRenderMode(stats), stats);
+  }
+
   const api = {
     rgbaOffset,
     KernelDitherer,
@@ -155,6 +272,11 @@
     sobelGradient,
     edgeChar,
     adjustLevels,
+    computeImageStats,
+    suggestLevels,
+    suggestRenderMode,
+    suggestSettingsForMode,
+    suggestSettings,
   };
 
   if (typeof module !== "undefined" && module.exports) {

@@ -34,6 +34,24 @@
           </div>
         </div>
 
+        <div class="field" id="suggestField" style="display:none;">
+          <label>Suggested settings <span class="val">tap to apply</span></label>
+          <div class="suggestions">
+            <button class="suggestion" id="suggestBraille" type="button">
+              <pre class="suggestion-preview" id="suggestBraillePreview" aria-hidden="true"></pre>
+              <span>Braille</span>
+            </button>
+            <button class="suggestion" id="suggestAscii" type="button">
+              <pre class="suggestion-preview" id="suggestAsciiPreview" aria-hidden="true"></pre>
+              <span>ASCII</span>
+            </button>
+            <button class="suggestion" id="suggestEdges" type="button">
+              <pre class="suggestion-preview" id="suggestEdgesPreview" aria-hidden="true"></pre>
+              <span>Edges</span>
+            </button>
+          </div>
+        </div>
+
         <div class="field">
           <label for="renderMode">Style</label>
           <select id="renderMode">
