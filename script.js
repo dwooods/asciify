@@ -6,7 +6,22 @@
 (function () {
   "use strict";
 
-  const { rgbaOffset, ditherers, packBrailleCell, asciiRamp, asciiRampBlocks, asciiRampDetailed, asciiRampExtended, luminanceToChar, sobelGradient, edgeChar, adjustLevels } = window.AsciifyDither;
+  const {
+    rgbaOffset,
+    ditherers,
+    packBrailleCell,
+    asciiRamp,
+    asciiRampBlocks,
+    asciiRampDetailed,
+    asciiRampExtended,
+    luminanceToChar,
+    sobelGradient,
+    edgeChar,
+    adjustLevels,
+    computeImageStats,
+    suggestRenderMode,
+    suggestSettingsForMode,
+  } = window.AsciifyDither;
 
   const charsetPresets = { standard: asciiRamp, blocks: asciiRampBlocks, detailed: asciiRampDetailed, extended: asciiRampExtended };
 
@@ -40,6 +55,13 @@
   let whitePoint = 255;
   let image = null;
   let ascii = "";
+  let lastSuggestions = null;
+  // Set when the page loaded with an explicit settings permalink (see
+  // restoreSettingsFromUrl): a shared link's whole point is reproducing a
+  // specific look, so auto-suggest must not immediately override it the
+  // moment an image is uploaded. Only suppresses the very next load -
+  // later uploads in the same session get auto-suggested normally.
+  let suppressNextAutoSuggest = false;
 
   // Mirrors the initial values above, so "Reset settings" can restore them
   // without touching the loaded image. Preview size isn't included - like
@@ -102,6 +124,9 @@
   const clearBtn = $("#clearBtn");
   const loadError = $("#loadError");
   const srStatus = $("#srStatus");
+  const suggestField = $("#suggestField");
+  const suggestionButtons = { braille: $("#suggestBraille"), ascii: $("#suggestAscii"), edges: $("#suggestEdges") };
+  const suggestionPreviewEls = { braille: $("#suggestBraillePreview"), ascii: $("#suggestAsciiPreview"), edges: $("#suggestEdgesPreview") };
 
   function formatBytes(bytes) {
     if (bytes < 1024) return `${bytes} B`;
@@ -124,7 +149,12 @@
     image = document.createElement("img");
     image.onload = () => {
       imageInfo.textContent += ` · ${image.naturalWidth}×${image.naturalHeight}px`;
-      render();
+      if (suppressNextAutoSuggest) {
+        suppressNextAutoSuggest = false;
+        render();
+      } else {
+        runAutoSuggest();
+      }
     };
     // file.type isn't a reliable gate (it can be empty for legitimate images
     // from some sources), so actual decode success/failure is the real
@@ -151,6 +181,8 @@
     output.innerHTML = "";
     emptyState.style.display = "flex";
     srStatus.textContent = "Image cleared.";
+    suggestField.style.display = "none";
+    lastSuggestions = null;
   });
 
   filepicker.addEventListener("change", function () {
@@ -547,7 +579,10 @@
     }
   }
 
-  function renderBrailleMode() {
+  // Computes the character grid for braille mode without touching the DOM,
+  // so it can be reused both for the real render and for the auto-suggest
+  // preview thumbnails (which must not disturb the live output).
+  function computeBrailleLines() {
     // Each output character is one braille cell (asciiXDots x asciiYDots
     // pixels), so the canvas is sized in actual pixels at that multiple of
     // the requested character width/height.
@@ -586,7 +621,11 @@
       lines.push(String.fromCharCode.apply(String, line));
     }
 
-    finalizeOutput(lines);
+    return lines;
+  }
+
+  function renderBrailleMode() {
+    finalizeOutput(computeBrailleLines());
   }
 
   // Shared setup for ASCII and edge-detection modes: one output character
@@ -614,7 +653,7 @@
     return imageData;
   }
 
-  function renderAsciiMode() {
+  function computeAsciiLines() {
     // Falls back to the standard ramp if the palette box is emptied out -
     // an empty ramp has no valid character to index into.
     const ramp = paletteInput.value || asciiRamp;
@@ -627,10 +666,14 @@
       }
       lines.push(line);
     }
-    finalizeOutput(lines);
+    return lines;
   }
 
-  function renderEdgesMode() {
+  function renderAsciiMode() {
+    finalizeOutput(computeAsciiLines());
+  }
+
+  function computeEdgesLines() {
     // Reuses the "Threshold" slider as edge sensitivity: a Sobel gradient's
     // magnitude is normalized to roughly the same 0-255 range that slider
     // already covers for the dithering threshold (see sobelMaxMagnitude).
@@ -644,7 +687,11 @@
       }
       lines.push(line);
     }
-    finalizeOutput(lines);
+    return lines;
+  }
+
+  function renderEdgesMode() {
+    finalizeOutput(computeEdgesLines());
   }
 
   function render() {
@@ -657,6 +704,145 @@
       renderBrailleMode();
     }
   }
+
+  function computeLinesForMode(mode) {
+    if (mode === "ascii") return computeAsciiLines();
+    if (mode === "edges") return computeEdgesLines();
+    return computeBrailleLines();
+  }
+
+  // A fixed, small working resolution for measuring an image's own
+  // brightness/contrast/edge stats - independent of whatever the live
+  // output width happens to be set to, so suggestions don't shift just
+  // because the width slider was touched earlier.
+  const statsWorkWidth = 120;
+
+  function computeStatsForImage() {
+    const height = Math.max(1, Math.round(statsWorkWidth * (image.height / image.width)));
+    canvas.width = statsWorkWidth;
+    canvas.height = height;
+
+    context.globalCompositeOperation = "source-over";
+    context.fillStyle = "white";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    context.globalCompositeOperation = "luminosity";
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    return computeImageStats(imageData.data, canvas.width, canvas.height);
+  }
+
+  // A small width for the suggestion thumbnails - just enough to be
+  // recognizable as a shape, not a full-fidelity render.
+  const previewWidth = 32;
+
+  // Computes the character-grid text for a settings suggestion without
+  // touching the live render/output: temporarily swaps in the suggested
+  // settings, computes the lines through the same tested render path
+  // every other mode uses, then restores everything exactly as it was.
+  function renderPreviewText(settings) {
+    const saved = { renderMode, dithererName, threshold, asciiWidth, blackPoint, whitePoint, palette: paletteInput.value };
+
+    renderMode = settings.renderMode;
+    if (settings.dithererName) dithererName = settings.dithererName;
+    if (settings.threshold !== undefined) threshold = settings.threshold;
+    if (settings.charsetKey) paletteInput.value = charsetPresets[settings.charsetKey];
+    blackPoint = settings.blackPoint;
+    whitePoint = settings.whitePoint;
+    asciiWidth = previewWidth;
+
+    const lines = computeLinesForMode(renderMode);
+
+    renderMode = saved.renderMode;
+    dithererName = saved.dithererName;
+    threshold = saved.threshold;
+    asciiWidth = saved.asciiWidth;
+    blackPoint = saved.blackPoint;
+    whitePoint = saved.whitePoint;
+    paletteInput.value = saved.palette;
+
+    return lines.join("\n");
+  }
+
+  // Applies one mode's suggested settings (render mode, dither/charset,
+  // threshold, levels) to the live state and controls. Only touches the
+  // fields a suggestion actually specifies - width, aspect lock, and
+  // invert are left as they are, since the heuristic doesn't have an
+  // opinion on those.
+  function applySuggestedSettings(settings) {
+    renderMode = settings.renderMode;
+    renderModeSel.value = renderMode;
+    applyRenderModeVisibility();
+
+    if (settings.dithererName) {
+      dithererName = settings.dithererName;
+      ditherSel.value = dithererName;
+    }
+
+    if (settings.charsetKey) {
+      paletteInput.value = charsetPresets[settings.charsetKey];
+      syncCharsetSelectFromPalette();
+    }
+
+    if (settings.threshold !== undefined) {
+      threshold = settings.threshold;
+      thresholdInput.value = threshold;
+      thresholdVal.textContent = threshold;
+    }
+
+    blackPoint = settings.blackPoint;
+    blackPointInput.value = blackPoint;
+    blackPointVal.textContent = blackPoint;
+
+    whitePoint = settings.whitePoint;
+    whitePointInput.value = whitePoint;
+    whitePointVal.textContent = whitePoint;
+  }
+
+  function highlightSuggestion(mode) {
+    Object.entries(suggestionButtons).forEach(([key, btn]) => btn.classList.toggle("selected", key === mode));
+  }
+
+  // Runs on every fresh image load: measures the image's own stats and
+  // suggests a full settings preset for all three render modes, previews
+  // each as a small thumbnail, and applies the single best-guess mode
+  // live so there's a sensible starting point without any clicking. This
+  // is a heuristic based on image statistics, not real scene
+  // understanding - a reasonable starting point, not a guaranteed-best
+  // artistic choice.
+  function runAutoSuggest() {
+    if (!image) return;
+    const stats = computeStatsForImage();
+    const bestMode = suggestRenderMode(stats);
+    const suggestions = {
+      braille: suggestSettingsForMode("braille", stats),
+      ascii: suggestSettingsForMode("ascii", stats),
+      edges: suggestSettingsForMode("edges", stats),
+    };
+    lastSuggestions = suggestions;
+
+    Object.entries(suggestions).forEach(([mode, settings]) => {
+      suggestionPreviewEls[mode].textContent = renderPreviewText(settings);
+    });
+
+    applySuggestedSettings(suggestions[bestMode]);
+    updateUrl();
+    render();
+
+    highlightSuggestion(bestMode);
+    suggestField.style.display = "";
+  }
+
+  Object.entries(suggestionButtons).forEach(([mode, btn]) => {
+    btn.addEventListener("click", function () {
+      if (!lastSuggestions) return;
+      applySuggestedSettings(lastSuggestions[mode]);
+      updateUrl();
+      render();
+      highlightSuggestion(mode);
+    });
+  });
 
   // Encodes the current settings (never the image itself - sharing a link
   // must never leak someone's uploaded photo) into the URL's query string,
@@ -701,6 +887,11 @@
     applyRenderModeVisibility();
 
     if (!params.toString()) return;
+
+    // A permalink's whole point is reproducing a specific look, so the
+    // first image uploaded under it must not get silently overridden by
+    // auto-suggest.
+    suppressNextAutoSuggest = true;
 
     const dither = params.get("dither");
     if (dither && ditherers[dither]) {

@@ -91,13 +91,68 @@ test("a fresh load with no query string shows the fields correct for the default
   assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("paletteField")).display), "none");
 });
 
-test("uploading a valid image renders braille output by default", async () => {
+test("uploading a valid image renders output and hides the empty state", async () => {
   await loadTestImage();
   assert.equal(await page.isVisible("#output"), true);
   assert.equal(await page.isVisible("#emptyState"), false);
+});
+
+test("braille mode renders using only braille codepoints", async () => {
+  // Explicitly selects braille mode rather than relying on it being the
+  // default after upload - auto-suggest may apply a different mode based
+  // on the image's own stats, so this only tests braille mode's own output.
+  await loadTestImage();
+  await page.selectOption("#renderMode", "braille");
+  await page.waitForTimeout(100);
   const text = await page.evaluate(() => document.getElementById("output").innerText);
   const codepoints = [...text.replace(/\n/g, "")].map((c) => c.codePointAt(0));
   assert.ok(codepoints.every((cp) => cp >= 0x2800 && cp <= 0x28ff), "expected only braille codepoints");
+});
+
+test("uploading an image shows three non-empty suggestion previews with exactly one selected", async () => {
+  await loadTestImage();
+  assert.equal(await page.isVisible("#suggestField"), true);
+
+  const [braillePreview, asciiPreview, edgesPreview] = await Promise.all([
+    page.textContent("#suggestBraillePreview"),
+    page.textContent("#suggestAsciiPreview"),
+    page.textContent("#suggestEdgesPreview"),
+  ]);
+  assert.ok(braillePreview.length > 0);
+  assert.ok(asciiPreview.length > 0);
+  assert.ok(edgesPreview.length > 0);
+
+  const selected = await page.evaluate(() =>
+    ["suggestBraille", "suggestAscii", "suggestEdges"].filter((id) => document.getElementById(id).classList.contains("selected"))
+  );
+  assert.equal(selected.length, 1, "expected exactly one suggestion marked selected");
+});
+
+test("clicking a suggestion card applies that mode without needing a re-upload", async () => {
+  await loadTestImage();
+  const autoPickedMode = await page.inputValue("#renderMode");
+  const otherMode = autoPickedMode === "ascii" ? "edges" : "ascii";
+  const otherButtonId = `#suggest${otherMode[0].toUpperCase()}${otherMode.slice(1)}`;
+
+  await page.click(otherButtonId);
+  await page.waitForTimeout(100);
+
+  assert.equal(await page.inputValue("#renderMode"), otherMode);
+  assert.equal(await page.evaluate((id) => document.querySelector(id).classList.contains("selected"), otherButtonId), true);
+  assert.notEqual(await page.textContent("#charCount"), "0");
+});
+
+test("auto-suggest does not override settings restored from a permalink on the first upload", async () => {
+  // The whole point of a shared settings link is reproducing a specific
+  // look - auto-suggest must not immediately clobber it the moment an
+  // image is uploaded under that link.
+  await page.goto(`${baseUrl}/index.html?mode=edges&threshold=200`, { waitUntil: "domcontentloaded" });
+  await loadTestImage();
+  assert.equal(await page.inputValue("#renderMode"), "edges");
+  assert.equal(await page.inputValue("#threshold"), "200");
+  // Auto-suggest is skipped entirely for this first load (not just its
+  // effect on the live settings), so the suggestions UI stays hidden.
+  assert.equal(await page.isVisible("#suggestField"), false);
 });
 
 test("switching to ASCII mode renders using only the palette's characters", async () => {

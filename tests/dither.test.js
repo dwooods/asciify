@@ -1,6 +1,21 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { rgbaOffset, KernelDitherer, ditherers, packBrailleCell, asciiRamp, luminanceToChar, sobelGradient, edgeChar, adjustLevels } = require("../dither.js");
+const {
+  rgbaOffset,
+  KernelDitherer,
+  ditherers,
+  packBrailleCell,
+  asciiRamp,
+  luminanceToChar,
+  sobelGradient,
+  edgeChar,
+  adjustLevels,
+  computeImageStats,
+  suggestLevels,
+  suggestRenderMode,
+  suggestSettingsForMode,
+  suggestSettings,
+} = require("../dither.js");
 
 test("rgbaOffset maps (x, y) to the red-channel index in a flat RGBA buffer", () => {
   assert.equal(rgbaOffset(0, 0, 4), 0);
@@ -194,4 +209,85 @@ test("adjustLevels remaps the black/white point range to 0-255", () => {
 test("adjustLevels does not divide by zero when black and white points are equal", () => {
   assert.equal(adjustLevels(50, 0, 100, 100), 0); // below the single point
   assert.equal(adjustLevels(150, 0, 100, 100), 255); // above the single point
+});
+
+test("computeImageStats reports zero spread and zero edge density for a flat image", () => {
+  const img = makeImage(10, 10, () => 128);
+  const stats = computeImageStats(img, 10, 10);
+  assert.equal(stats.mean, 128);
+  assert.equal(stats.stdev, 0);
+  assert.equal(stats.edgeDensity, 0);
+  assert.equal(stats.p2, 128);
+  assert.equal(stats.p98, 128);
+});
+
+test("computeImageStats reports high spread and positive edge density across a hard boundary", () => {
+  const img = makeImage(10, 10, (x) => (x < 5 ? 0 : 255));
+  const stats = computeImageStats(img, 10, 10);
+  assert.equal(stats.mean, 127.5);
+  assert.ok(stats.stdev > 100, `expected high stdev, got ${stats.stdev}`);
+  assert.ok(stats.edgeDensity > 0, `expected some edge energy, got ${stats.edgeDensity}`);
+  assert.equal(stats.p2, 0);
+  assert.equal(stats.p98, 255);
+});
+
+test("suggestLevels stretches the percentile range to fill 0-255", () => {
+  assert.deepEqual(suggestLevels({ p2: 50, p98: 200 }), { blackPoint: 50, whitePoint: 200 });
+});
+
+test("suggestLevels avoids a zero-width range when p2 and p98 are equal", () => {
+  const { blackPoint, whitePoint } = suggestLevels({ p2: 128, p98: 128 });
+  assert.equal(blackPoint, 128);
+  assert.equal(whitePoint, 129);
+});
+
+test("suggestLevels clamps to the valid 0-254/1-255 slider ranges", () => {
+  assert.deepEqual(suggestLevels({ p2: -10, p98: 300 }), { blackPoint: 0, whitePoint: 255 });
+});
+
+test("suggestRenderMode picks edges for images with plentiful strong edges", () => {
+  assert.equal(suggestRenderMode({ edgeDensity: 60, stdev: 80 }), "edges");
+});
+
+test("suggestRenderMode picks ascii for flat, low-contrast, low-edge images", () => {
+  assert.equal(suggestRenderMode({ edgeDensity: 5, stdev: 20 }), "ascii");
+});
+
+test("suggestRenderMode falls back to braille for everything in between", () => {
+  assert.equal(suggestRenderMode({ edgeDensity: 20, stdev: 70 }), "braille");
+});
+
+test("suggestSettingsForMode returns edges settings with a threshold derived from edge density", () => {
+  const settings = suggestSettingsForMode("edges", { edgeDensity: 100, stdev: 50, p2: 10, p98: 240 });
+  assert.equal(settings.renderMode, "edges");
+  assert.equal(settings.threshold, 60); // round(100 * 0.6)
+  assert.equal(settings.blackPoint, 10);
+  assert.equal(settings.whitePoint, 240);
+});
+
+test("suggestSettingsForMode clamps the edges threshold into a sane range", () => {
+  const low = suggestSettingsForMode("edges", { edgeDensity: 1, stdev: 0, p2: 0, p98: 255 });
+  assert.equal(low.threshold, 10);
+  const high = suggestSettingsForMode("edges", { edgeDensity: 1000, stdev: 0, p2: 0, p98: 255 });
+  assert.equal(high.threshold, 200);
+});
+
+test("suggestSettingsForMode picks a richer ASCII charset for higher-contrast images", () => {
+  const flat = suggestSettingsForMode("ascii", { stdev: 10, p2: 0, p98: 255 });
+  assert.equal(flat.charsetKey, "standard");
+  const contrasty = suggestSettingsForMode("ascii", { stdev: 50, p2: 0, p98: 255 });
+  assert.equal(contrasty.charsetKey, "extended");
+});
+
+test("suggestSettingsForMode picks Atkinson dithering for higher-contrast braille images", () => {
+  const flat = suggestSettingsForMode("braille", { stdev: 20, p2: 0, p98: 255 });
+  assert.equal(flat.dithererName, "floydSteinberg");
+  const contrasty = suggestSettingsForMode("braille", { stdev: 80, p2: 0, p98: 255 });
+  assert.equal(contrasty.dithererName, "atkinson");
+});
+
+test("suggestSettings combines suggestRenderMode and suggestSettingsForMode", () => {
+  const settings = suggestSettings({ edgeDensity: 60, stdev: 80, p2: 20, p98: 230 });
+  assert.equal(settings.renderMode, "edges");
+  assert.equal(settings.threshold, 36); // round(60 * 0.6)
 });

@@ -193,6 +193,45 @@ a { color: var(--accent); }
   width: calc(100% - 1.2rem);
 }
 
+.suggestions {
+  display: flex;
+  gap: 0.5rem;
+}
+.suggestion {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+  font: inherit;
+}
+.suggestion:hover { border-color: var(--accent); }
+.suggestion.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.suggestion-preview {
+  width: 100%;
+  height: 60px;
+  overflow: hidden;
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  font-size: 3px;
+  line-height: 1em;
+  white-space: pre;
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: 3px;
+}
+.suggestion span {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
 select, input[type="number"], textarea {
   width: 100%;
   font: inherit;
