@@ -1,0 +1,16 @@
+{
+  "name": "Asciify",
+  "install": "npm ci && npx playwright install --with-deps chromium",
+  "terminals": [
+    {
+      "name": "web",
+      "command": "python3 -m http.server 8000"
+    }
+  ],
+  "ports": [
+    {
+      "name": "web",
+      "port": 8000
+    }
+  ]
+}
