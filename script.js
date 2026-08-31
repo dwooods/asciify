@@ -410,18 +410,25 @@
 
   const exportFontSize = 16;
 
+  // Matches #output's CSS exactly (line-height: 1em, span width: 0.5em),
+  // so exports reproduce the same on-screen proportions for every render
+  // mode. This is deliberately NOT derived from the font's own glyph
+  // metrics (e.g. canvas measureText) - those vary by font/platform and
+  // don't match the live page's fixed cell width, which previously made
+  // exports come out visibly stretched relative to the on-screen preview.
+  const cellAspect = 0.5; // width : height, per character cell
+
   // Shared sizing math for the PNG/SVG exports: both need the same grid
-  // dimensions in pixels, derived from the monospace font's advance width.
+  // dimensions in pixels.
   function measureAsciiGrid(lines) {
     const lineHeight = exportFontSize;
     const padding = exportFontSize;
-    const measure = document.createElement("canvas").getContext("2d");
-    measure.font = `${exportFontSize}px ${exportFontFamily}`;
-    const charWidth = measure.measureText("⠀").width;
+    const charWidth = exportFontSize * cellAspect;
     const cols = lines.reduce((max, l) => Math.max(max, l.length), 0);
     return {
       lineHeight,
       padding,
+      charWidth,
       width: Math.ceil(charWidth * cols) + padding * 2,
       height: lineHeight * lines.length + padding * 2,
     };
@@ -431,10 +438,13 @@
   // monospace context (Discord, GitHub comments, print). Renders black text
   // on a white background regardless of the page's light/dark theme, since
   // the point is a portable, printable image rather than a screenshot of
-  // the app itself.
+  // the app itself. Draws one character at a time at a fixed x-step
+  // (charWidth) rather than calling fillText once per line - canvas text
+  // layout otherwise uses the font's own (wider, inconsistent) advance
+  // width per character, which is what caused the stretching this fixes.
   function renderAsciiToCanvas() {
     const lines = ascii.split("\n");
-    const { lineHeight, padding, width, height } = measureAsciiGrid(lines);
+    const { lineHeight, padding, charWidth, width, height } = measureAsciiGrid(lines);
 
     const exportCanvas = document.createElement("canvas");
     exportCanvas.width = width;
@@ -446,8 +456,10 @@
     ctx.fillStyle = "black";
     ctx.font = `${exportFontSize}px ${exportFontFamily}`;
     ctx.textBaseline = "top";
-    lines.forEach((line, i) => {
-      ctx.fillText(line, padding, padding + i * lineHeight);
+    lines.forEach((line, lineIndex) => {
+      for (let i = 0; i < line.length; i++) {
+        ctx.fillText(line[i], padding + i * charWidth, padding + lineIndex * lineHeight);
+      }
     });
 
     return exportCanvas;
@@ -465,10 +477,18 @@
   downloadSvgBtn.addEventListener("click", function () {
     if (!ascii) return;
     const lines = ascii.split("\n");
-    const { lineHeight, padding, width, height } = measureAsciiGrid(lines);
+    const { lineHeight, padding, charWidth, width, height } = measureAsciiGrid(lines);
 
+    // textLength + lengthAdjust force each line to render at exactly
+    // charWidth * length regardless of whatever font actually ends up
+    // displaying the SVG (which may not even have the requested font
+    // installed) - the same fixed-width-per-character guarantee the
+    // canvas export gets from drawing character-by-character.
     const textEls = lines
-      .map((line, i) => `<text x="${padding}" y="${padding + i * lineHeight + exportFontSize * 0.8}" xml:space="preserve">${escapeXml(line)}</text>`)
+      .map(
+        (line, i) =>
+          `<text x="${padding}" y="${padding + i * lineHeight + exportFontSize * 0.8}" textLength="${charWidth * line.length}" lengthAdjust="spacingAndGlyphs" xml:space="preserve">${escapeXml(line)}</text>`
+      )
       .join("\n  ");
 
     // font-family is single-quoted: exportFontFamily embeds double-quoted

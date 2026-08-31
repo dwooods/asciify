@@ -264,6 +264,32 @@ test("exports work with mode-correct filenames, and the SVG export is well-forme
   assert.equal(isValidXml, true, "expected the exported SVG to parse as well-formed XML");
 });
 
+test("the PNG export matches the on-screen character-cell aspect ratio", async () => {
+  // Regression test: the PNG export used to size/lay out text using the
+  // canvas font's own (font- and platform-dependent) glyph advance width,
+  // which didn't match the fixed 0.5-wide/1-tall cell the on-screen CSS
+  // enforces (#output span { width: 0.5em }) - so exports came out visibly
+  // horizontally stretched relative to the live preview. The exported
+  // per-character aspect ratio must match the CSS's 0.5 exactly.
+  await loadTestImage();
+  await page.waitForTimeout(100);
+
+  const gridInfo = await page.textContent("#gridInfo");
+  const [cols, rows] = gridInfo.match(/\d+/g).map(Number);
+
+  const [pngDownload] = await Promise.all([page.waitForEvent("download"), page.click("#downloadPngBtn")]);
+  const buf = fs.readFileSync(await pngDownload.path());
+  const pngWidth = buf.readUInt32BE(16); // PNG IHDR chunk: width at bytes 16-19
+  const pngHeight = buf.readUInt32BE(20); // height at bytes 20-23 (big-endian)
+
+  // Back out padding (fixed at exportFontSize=16px per side) before
+  // comparing, since it's the per-cell ratio that must match, not the
+  // total image dimensions.
+  const padding = 16;
+  const cellAspect = (pngWidth - padding * 2) / cols / ((pngHeight - padding * 2) / rows);
+  assert.ok(Math.abs(cellAspect - 0.5) < 0.02, `expected per-cell aspect ~0.5, got ${cellAspect}`);
+});
+
 test("changing settings updates the URL, and resetting to defaults clears it", async () => {
   assert.equal(await page.evaluate(() => location.search), "");
 
