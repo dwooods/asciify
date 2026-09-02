@@ -223,8 +223,21 @@
   // stats: strong, plentiful edges suit line art; flat, low-contrast images
   // with few edges suit ASCII's continuous shading ramp; everything else
   // falls back to braille, the safest general-purpose choice.
+  //
+  // The edges cutoff was recalibrated against 20 real photos (not just the
+  // synthetic images used during development): mean edge magnitude for real
+  // photos tops out around ~35 even for busy/high-detail images, so the
+  // original threshold of 40 was literally unreachable and edges mode never
+  // got suggested at all. 20 was chosen as the point that captures clearly
+  // good line-art candidates (a toy AT-ST model, a tiger's face, a
+  // black-and-white car) while excluding clearly poor ones (soft portraits,
+  // dark or low-contrast photos). It's an imperfect proxy, not scene
+  // understanding: a busy/cluttered scene can score just as high on edge
+  // density as a clean subject with a plain background, but render as noise
+  // rather than a recognizable outline - a known limitation to watch for
+  // when tuning further against more images.
   function suggestRenderMode(stats) {
-    if (stats.edgeDensity > 40) return "edges";
+    if (stats.edgeDensity > 20) return "edges";
     if (stats.edgeDensity < 15 && stats.stdev < 50) return "ascii";
     return "braille";
   }

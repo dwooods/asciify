@@ -257,6 +257,15 @@ test("suggestRenderMode falls back to braille for everything in between", () => 
   assert.equal(suggestRenderMode({ edgeDensity: 20, stdev: 70 }), "braille");
 });
 
+test("suggestRenderMode picks edges at real-photo-scale edge density, not just extreme synthetic values", () => {
+  // Regression test: the edges cutoff used to be 40, a value no real photo
+  // in a 20-image calibration set ever reached (max measured was ~35, for
+  // a busy black-and-white photo) - edges mode was effectively
+  // unreachable. 25 is roughly a tiger-face close-up's measured edge
+  // density; recalibrated against real photos, this must pick edges.
+  assert.equal(suggestRenderMode({ edgeDensity: 25, stdev: 70 }), "edges");
+});
+
 test("suggestSettingsForMode returns edges settings with a threshold derived from edge density", () => {
   const settings = suggestSettingsForMode("edges", { edgeDensity: 100, stdev: 50, p2: 10, p98: 240 });
   assert.equal(settings.renderMode, "edges");
