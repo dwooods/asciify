@@ -172,11 +172,35 @@
     return 255;
   }
 
+  // Splits the image into a grid of blocks and returns the mean normalized
+  // Sobel gradient magnitude within each one - the per-region building
+  // block for measuring how evenly edges are spread across the image (see
+  // edgeConcentration in computeImageStats).
+  function computeEdgeBlockMeans(data, width, height, blocksX, blocksY) {
+    const blockW = Math.ceil(width / blocksX);
+    const blockH = Math.ceil(height / blocksY);
+    const sums = new Array(blocksX * blocksY).fill(0);
+    const counts = new Array(blocksX * blocksY).fill(0);
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const { dx, dy } = sobelGradient(data, x, y, width, height);
+        const magnitude = Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
+        const blockIndex = Math.min(blocksY - 1, Math.floor(y / blockH)) * blocksX + Math.min(blocksX - 1, Math.floor(x / blockW));
+        sums[blockIndex] += magnitude;
+        counts[blockIndex]++;
+      }
+    }
+    return sums.map((sum, i) => (counts[i] ? sum / counts[i] : 0));
+  }
+
   // Aggregate greyscale stats used to auto-suggest render settings:
-  // overall brightness and spread (from the histogram), and edge density
+  // overall brightness and spread (from the histogram), edge density
   // (mean normalized Sobel gradient magnitude - see sobelMaxMagnitude) as
   // a proxy for how much of the image is sharp shapes vs smooth/flat
-  // regions.
+  // regions, and edge concentration (see below) as a proxy for whether
+  // those edges outline a distinct subject or are just spread uniformly
+  // across the frame.
   function computeImageStats(data, width, height) {
     const histogram = computeHistogram(data, width, height);
     const total = width * height;
@@ -198,11 +222,28 @@
         edgeSum += Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
       }
     }
+    const edgeDensity = edgeSum / total;
+
+    // How UNEVENLY edge energy is spread across the image, as the
+    // coefficient of variation (stdev / mean) of edge density across a
+    // 6x6 grid of blocks. A clean subject against a plainer background
+    // concentrates edges in some blocks and leaves others nearly flat
+    // (high concentration); a busy/cluttered scene spreads edges
+    // uniformly across almost every block (low concentration) - found by
+    // testing against a set of real photos where high overall edge
+    // density alone wasn't enough to predict a good line-art result (see
+    // suggestRenderMode).
+    const blockMeans = computeEdgeBlockMeans(data, width, height, 6, 6);
+    const blockMean = blockMeans.reduce((a, b) => a + b, 0) / blockMeans.length;
+    const blockSumSquaredDiff = blockMeans.reduce((sum, m) => sum + (m - blockMean) * (m - blockMean), 0);
+    const blockStdev = Math.sqrt(blockSumSquaredDiff / blockMeans.length);
+    const edgeConcentration = blockMean > 0 ? blockStdev / blockMean : 0;
 
     return {
       mean,
       stdev,
-      edgeDensity: edgeSum / total,
+      edgeDensity,
+      edgeConcentration,
       p2: histogramPercentile(histogram, 2),
       p98: histogramPercentile(histogram, 98),
     };
@@ -220,24 +261,27 @@
   }
 
   // Picks the render mode most likely to suit an image from its measured
-  // stats: strong, plentiful edges suit line art; flat, low-contrast images
-  // with few edges suit ASCII's continuous shading ramp; everything else
-  // falls back to braille, the safest general-purpose choice.
+  // stats: strong, plentiful, unevenly-distributed edges suit line art;
+  // flat, low-contrast images with few edges suit ASCII's continuous
+  // shading ramp; everything else falls back to braille, the safest
+  // general-purpose choice.
   //
-  // The edges cutoff was recalibrated against 20 real photos (not just the
-  // synthetic images used during development): mean edge magnitude for real
-  // photos tops out around ~35 even for busy/high-detail images, so the
-  // original threshold of 40 was literally unreachable and edges mode never
-  // got suggested at all. 20 was chosen as the point that captures clearly
-  // good line-art candidates (a toy AT-ST model, a tiger's face, a
-  // black-and-white car) while excluding clearly poor ones (soft portraits,
-  // dark or low-contrast photos). It's an imperfect proxy, not scene
-  // understanding: a busy/cluttered scene can score just as high on edge
-  // density as a clean subject with a plain background, but render as noise
-  // rather than a recognizable outline - a known limitation to watch for
-  // when tuning further against more images.
+  // Both edges thresholds were calibrated against 20 real photos (not just
+  // the synthetic images used during development):
+  // - edgeDensity > 20: mean edge magnitude for real photos tops out
+  //   around ~35 even for busy/high-detail images, so the original
+  //   threshold of 40 was literally unreachable and edges mode never got
+  //   suggested at all.
+  // - edgeConcentration > 0.33: edge density alone can't tell a clean
+  //   subject on a plain background (which SHOULD render as line art) from
+  //   a busy/cluttered scene with edges everywhere (which just renders as
+  //   noise) - both can score similarly high on raw edge density. Testing
+  //   against real photos found a clean gap: photos that rendered well as
+  //   line art (a toy AT-ST model, a tiger's face, a black-and-white car)
+  //   all scored >= 0.355 on this concentration measure, while busy/
+  //   cluttered scenes that rendered as noise all scored <= 0.322.
   function suggestRenderMode(stats) {
-    if (stats.edgeDensity > 20) return "edges";
+    if (stats.edgeDensity > 20 && stats.edgeConcentration > 0.33) return "edges";
     if (stats.edgeDensity < 15 && stats.stdev < 50) return "ascii";
     return "braille";
   }

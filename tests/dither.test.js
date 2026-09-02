@@ -231,6 +231,26 @@ test("computeImageStats reports high spread and positive edge density across a h
   assert.equal(stats.p98, 255);
 });
 
+test("computeImageStats reports higher edge concentration for a localized subject than for uniformly-spread edges", () => {
+  // A 30x30 image sized so the 6x6 block grid divides evenly into 5x5
+  // blocks. Both images have edges of the same intrinsic strength (a
+  // 4px-period stripe pattern) and roughly comparable total edge density;
+  // the only difference is WHERE those edges are - concentrated in one
+  // corner (mimicking a subject on a plain background) vs. spread evenly
+  // across the whole frame (mimicking a busy/cluttered scene).
+  const stripe = (x) => (x % 4 < 2 ? 0 : 255);
+  const concentrated = makeImage(30, 30, (x, y) => (x < 10 && y < 10 ? stripe(x) : 128));
+  const uniform = makeImage(30, 30, (x) => stripe(x));
+
+  const concentratedStats = computeImageStats(concentrated, 30, 30);
+  const uniformStats = computeImageStats(uniform, 30, 30);
+
+  assert.ok(
+    concentratedStats.edgeConcentration > uniformStats.edgeConcentration,
+    `expected localized edges (${concentratedStats.edgeConcentration}) to score higher than uniform edges (${uniformStats.edgeConcentration})`
+  );
+});
+
 test("suggestLevels stretches the percentile range to fill 0-255", () => {
   assert.deepEqual(suggestLevels({ p2: 50, p98: 200 }), { blackPoint: 50, whitePoint: 200 });
 });
@@ -245,8 +265,17 @@ test("suggestLevels clamps to the valid 0-254/1-255 slider ranges", () => {
   assert.deepEqual(suggestLevels({ p2: -10, p98: 300 }), { blackPoint: 0, whitePoint: 255 });
 });
 
-test("suggestRenderMode picks edges for images with plentiful strong edges", () => {
-  assert.equal(suggestRenderMode({ edgeDensity: 60, stdev: 80 }), "edges");
+test("suggestRenderMode picks edges for images with plentiful, unevenly-distributed edges", () => {
+  assert.equal(suggestRenderMode({ edgeDensity: 60, edgeConcentration: 0.5, stdev: 80 }), "edges");
+});
+
+test("suggestRenderMode avoids edges for busy/cluttered images despite high edge density", () => {
+  // Regression test: found by testing against real photos - a "busy
+  // clutter" photo can have edge density as high as a clean subject on a
+  // plain background, but the edges are spread uniformly across the whole
+  // frame (low concentration) rather than outlining a recognizable shape,
+  // and renders as noise rather than line art.
+  assert.equal(suggestRenderMode({ edgeDensity: 33, edgeConcentration: 0.27, stdev: 80 }), "braille");
 });
 
 test("suggestRenderMode picks ascii for flat, low-contrast, low-edge images", () => {
@@ -263,7 +292,7 @@ test("suggestRenderMode picks edges at real-photo-scale edge density, not just e
   // a busy black-and-white photo) - edges mode was effectively
   // unreachable. 25 is roughly a tiger-face close-up's measured edge
   // density; recalibrated against real photos, this must pick edges.
-  assert.equal(suggestRenderMode({ edgeDensity: 25, stdev: 70 }), "edges");
+  assert.equal(suggestRenderMode({ edgeDensity: 25, edgeConcentration: 0.5, stdev: 70 }), "edges");
 });
 
 test("suggestSettingsForMode returns edges settings with a threshold derived from edge density", () => {
@@ -296,7 +325,7 @@ test("suggestSettingsForMode picks Atkinson dithering for higher-contrast braill
 });
 
 test("suggestSettings combines suggestRenderMode and suggestSettingsForMode", () => {
-  const settings = suggestSettings({ edgeDensity: 60, stdev: 80, p2: 20, p98: 230 });
+  const settings = suggestSettings({ edgeDensity: 60, edgeConcentration: 0.5, stdev: 80, p2: 20, p98: 230 });
   assert.equal(settings.renderMode, "edges");
   assert.equal(settings.threshold, 36); // round(60 * 0.6)
 });
