@@ -227,6 +227,69 @@ current heuristic, not break the site's core "just open the HTML file"
 promise. Real per-image latency (likely 0.5-3s) where there's currently
 none. Where to host several MB of model weights. Not yet decided.
 
+**Answering the three open questions.** Talked through them before
+writing any code:
+
+1. *`file://` compatibility* — corrected the framing here: committing
+   weights into the repo doesn't fix `file://` on its own. `fetch()` is
+   blocked under the bare `file://` protocol regardless of where the
+   bytes physically live — same-origin doesn't help. The real
+   requirement is "served over `http(s)`," which GitHub Pages already
+   satisfies and so does a fully offline `python3 -m http.server` with
+   no internet connection at all. Only literally double-clicking
+   `index.html` as `file:///path/...` loses the model and falls back to
+   the pure-statistics heuristic. That's a much narrower loss than "needs
+   network access" made it sound.
+2. *Where to host the weights* — decided: commit them into the repo.
+   Bigger repo, but works offline once served, no third-party CDN
+   dependency.
+3. *Real latency* — asked for actual numbers, not an estimate, before
+   finalizing anything. Measured below.
+
+**Measuring real latency, and a detour finding a model to measure.**
+Went looking for TensorFlow.js + a TFJS-ported U²-Netp to benchmark, and
+hit the same kind of environment constraint as the `file://` question,
+just at the tooling layer this time: this sandbox's egress proxy blocks
+`cdn.jsdelivr.net` and `huggingface.co` outright (403, org policy) —
+which is where most published TFJS model conversions live — while
+`registry.npmjs.org` and `raw.githubusercontent.com` are reachable.
+Used that to `npm pack` candidates instead of fighting the CDN block:
+found `@planby-tech/rmbg-webgpu` (MIT, on npm), which bundles a
+`u2netp.onnx` (4.4 MB, Apache-2.0 via the original U-2-Net project) and
+runs it through `onnxruntime-web` rather than TensorFlow.js. Read its
+source directly (it's a small, readable bundle) to lift the exact
+preprocessing it uses — 320×320 input, ImageNet mean/std normalization
+after scaling by the image's own max channel value, NCHW float32 tensor
+— and reimplemented that against `onnxruntime-web`'s plain
+`ort.min.js` `<script>` build (no ES modules, matching this project's
+constraints) in a standalone Playwright harness outside the repo, run
+against four real `test-assets` photos.
+
+Real numbers, single-threaded WASM (no COOP/COEP headers, so no
+`SharedArrayBuffer` — the same constraint a plain static file server or
+GitHub Pages would have), headless Chromium on this sandbox's CPU:
+
+| Stage | Time |
+|---|---|
+| One-time session creation (WASM init + model parse) | ~1.1–2.4s |
+| First inference (cold JIT) | ~3.1–4.3s |
+| Each subsequent inference | ~1.9s, consistent across all four images |
+
+And a footprint number that turned out to matter more than the latency:
+the ONNX runtime's WASM binary alone is **13 MB** — three times the
+size of the 4.4 MB model it's running. Total minimum footprint to commit
+(`ort.min.js` + wasm + the model) is **~18 MB**, versus the whole rest of
+this repo's source today. That's the real cost of "invest in a client-side
+model" for a project whose pitch has been "plain files, no build step,
+tiny enough to just grab" — worth surfacing plainly rather than only
+reporting the latency number that was asked for.
+
+Not yet decided: whether ~2-6 seconds of one-time-plus-per-image latency
+and an ~18 MB repo addition is worth it against the heuristic's
+documented failure modes above. That's a call for the next round with
+the numbers in hand, not one to make silently while chasing the
+technical answer.
+
 ## Patterns worth remembering
 
 - **Every real bug this project has shipped was found by actually looking
@@ -252,3 +315,9 @@ none. Where to host several MB of model weights. Not yet decided.
   concept of subject vs. background." Naming that clearly is what turned
   a series of one-off threshold fixes into a single, deliberate
   architecture decision.
+- **Measure the number that was actually asked for, then report the one
+  that matters more if it's different.** Asked to check latency; the
+  answer that turned out to matter most for this project wasn't the
+  ~2-6 seconds of inference time, it was the 13 MB WASM runtime binary
+  sitting underneath a 4.4 MB model. Don't let "answer the literal
+  question" crowd out "surface what the investigation actually found."
