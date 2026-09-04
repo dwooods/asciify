@@ -177,7 +177,7 @@ test("auto-suggest degrades gracefully when on-device subject detection is unava
   assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("suggestRefining")).display), "none");
 });
 
-test("auto-suggest refines the suggestion once on-device subject detection finishes", async () => {
+test("auto-suggest suppresses the background once on-device subject detection finishes", async () => {
   // Unlike every other test in this file, this one needs the real model to
   // actually load and run, so it uses its own page rather than the shared
   // one the beforeEach above deliberately blocks vendor/ on. Model load +
@@ -193,7 +193,7 @@ test("auto-suggest refines the suggestion once on-device subject detection finis
   await ortPage.waitForFunction(() => getComputedStyle(document.getElementById("suggestRefining")).display === "none", { timeout: 30000 });
   assert.equal(
     await ortPage.textContent("#srStatus"),
-    "Suggestion refined using on-device subject detection."
+    "Background suppressed using on-device subject detection."
   );
 
   assert.deepEqual(ortPageErrors, []);

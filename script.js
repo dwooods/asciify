@@ -69,6 +69,29 @@
   // discard itself instead of touching a now-unrelated (or absent) image.
   let autoSuggestGeneration = 0;
 
+  // PROTOTYPE (not proposed for merge as-is): render-time subject masking.
+  // Unlike the mask-fed-into-stats experiment (see JOURNEY.md - it didn't
+  // fix anything because rendering itself was never mask-aware), this
+  // applies the mask directly to what gets drawn: background cells are
+  // blanked at render time regardless of what settings are in effect.
+  // Deliberately kept independent of auto-suggest's chosen settings, so
+  // this test isolates "does masking the render help" from "does masking
+  // the stats help" (already answered: no).
+  let subjectMask = null;
+  let subjectMaskWidth = 0;
+  let subjectMaskHeight = 0;
+
+  // True if (x, y) in a width x height render buffer falls on a background
+  // pixel per the current subjectMask - false (never suppress) when no mask
+  // is set, so this is always safe to call unconditionally in the render
+  // loops below.
+  function isBackgroundPixel(x, y, width, height) {
+    if (!subjectMask) return false;
+    const mx = Math.min(subjectMaskWidth - 1, Math.floor((x / width) * subjectMaskWidth));
+    const my = Math.min(subjectMaskHeight - 1, Math.floor((y / height) * subjectMaskHeight));
+    return !subjectMask[my * subjectMaskWidth + mx];
+  }
+
   // Mirrors the initial values above, so "Reset settings" can restore them
   // without touching the loaded image. Preview size isn't included - like
   // the permalink, it's a local display preference, not part of the art.
@@ -152,6 +175,7 @@
   function loadFile(file) {
     if (!file) return;
     autoSuggestGeneration++;
+    subjectMask = null;
     loadError.style.display = "none";
     imageInfo.textContent = `${file.name} · ${formatBytes(file.size)} · ${file.type || "unknown type"}`;
     image = document.createElement("img");
@@ -177,6 +201,7 @@
 
   clearBtn.addEventListener("click", function () {
     autoSuggestGeneration++;
+    subjectMask = null;
     image = null;
     ascii = "";
     filepicker.value = "";
@@ -626,7 +651,11 @@
     for (let y = 0; y < canvas.height; y += asciiYDots) {
       const line = [];
       for (let x = 0; x < canvas.width; x += asciiXDots) {
-        line.push(packBrailleCell(dithered.data, x, y, canvas.width, targetValue));
+        line.push(
+          isBackgroundPixel(x, y, canvas.width, canvas.height)
+            ? 0x2800 // blank braille cell (no dots)
+            : packBrailleCell(dithered.data, x, y, canvas.width, targetValue)
+        );
       }
       lines.push(String.fromCharCode.apply(String, line));
     }
@@ -672,7 +701,7 @@
     for (let y = 0; y < height; y++) {
       let line = "";
       for (let x = 0; x < width; x++) {
-        line += luminanceToChar(data[rgbaOffset(x, y, width)], ramp, invert);
+        line += isBackgroundPixel(x, y, width, height) ? " " : luminanceToChar(data[rgbaOffset(x, y, width)], ramp, invert);
       }
       lines.push(line);
     }
@@ -692,6 +721,10 @@
     for (let y = 0; y < height; y++) {
       let line = "";
       for (let x = 0; x < width; x++) {
+        if (isBackgroundPixel(x, y, width, height)) {
+          line += " ";
+          continue;
+        }
         const { dx, dy } = sobelGradient(data, x, y, width, height);
         line += edgeChar(dx, dy, threshold);
       }
@@ -861,30 +894,41 @@
     return true;
   }
 
+  // PROTOTYPE (see subjectMask above): a higher-resolution mask than the
+  // 120px-wide one computeStatsForImage() uses, so render-time background
+  // suppression isn't blockier than it has to be.
+  const renderMaskWidth = 240;
+
   // Kicks off the on-device subject-detection model (see saliency.js) in
-  // the background and, if it finds a subject, silently re-suggests using
-  // subject-only stats instead of whole-frame ones - fixing the class of
-  // auto-suggest misses documented in JOURNEY.md where background clutter
-  // or framing skewed the whole-frame reading. Never blocks or delays the
-  // instant whole-frame suggestion runAutoSuggest() already applied; if the
-  // model is unavailable (file://, offline, blocked) or takes too long to
-  // matter, that whole-frame suggestion is exactly what's left in place.
+  // the background and, if it finds a subject, stores the mask for
+  // render-time background suppression (see isBackgroundPixel/subjectMask)
+  // and re-renders with the *same* settings already in effect - testing
+  // whether masking the render itself (rather than the mask-fed-into-stats
+  // approach documented in JOURNEY.md, which didn't work) actually fixes
+  // the busy-background cases. Never blocks or delays the instant
+  // whole-frame suggestion runAutoSuggest() already applied; if the model
+  // is unavailable (file://, offline, blocked) or takes too long to
+  // matter, nothing here ever runs and today's render is exactly what's
+  // left in place.
   function refineAutoSuggestWithSaliency(appliedSettings) {
     if (!window.AsciifySaliency || !image) return;
     const generation = autoSuggestGeneration;
-    const targetHeight = statsWorkHeightFor(image);
+    const targetHeight = Math.max(1, Math.round(renderMaskWidth * (image.height / image.width)));
     suggestRefining.style.display = "";
 
     window.AsciifySaliency
-      .detectForegroundMask(image, image.naturalWidth, image.naturalHeight, statsWorkWidth, targetHeight)
+      .detectForegroundMask(image, image.naturalWidth, image.naturalHeight, renderMaskWidth, targetHeight)
       .then((mask) => {
         if (generation !== autoSuggestGeneration) return; // image changed/cleared meanwhile
         suggestRefining.style.display = "none";
-        if (!mask) return; // model unavailable - keep the whole-frame suggestion
+        if (!mask) return; // model unavailable - keep today's whole-frame render
         if (!currentSettingsMatchSuggestion(appliedSettings)) return; // user already moved on
 
-        applyStatsAsSuggestions(computeStatsForImage(mask));
-        srStatus.textContent = "Suggestion refined using on-device subject detection.";
+        subjectMask = mask;
+        subjectMaskWidth = renderMaskWidth;
+        subjectMaskHeight = targetHeight;
+        render();
+        srStatus.textContent = "Background suppressed using on-device subject detection.";
       });
   }
 
