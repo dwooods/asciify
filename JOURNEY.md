@@ -290,6 +290,70 @@ documented failure modes above. That's a call for the next round with
 the numbers in hand, not one to make silently while chasing the
 technical answer.
 
+**Building it, and a negative result.** Given the go-ahead, vendored
+`onnxruntime-web` + `u2netp.onnx` into the repo, extended
+`computeImageStats()` in `dither.js` to take an optional per-pixel mask
+(pixels outside it are excluded from the histogram, edge-density sum, and
+the 6×6 concentration grid — with a fallback to the whole frame if the
+mask selects nothing, so a failed segmentation can't produce a zero-pixel
+divide-by-zero), and added `saliency.js` to run the model and hand back a
+mask. Two real bugs turned up before it even ran correctly: `ort.min.js`
+resolves its WASM loader's `.mjs` companion via a dynamic `import()`
+(needs a real relative specifier — a bare `"vendor/..."` path is rejected
+outright, unlike `fetch()`) while it resolves the `.wasm` binary itself
+via `fetch()` from inside that `.mjs` (relative to the *document*, not the
+script) — two paths, in the same directory, needing different bases. Only
+caught because a manual Playwright pass actually read the console output
+instead of trusting a silent catch block.
+
+Once it ran, ran it against the actual three documented failure photos
+(not synthetic cases) and looked at the rendered output, not just the
+chosen mode:
+
+- **`bright image.png` (tricycle vs. bare trees)** — refined stats flipped
+  it to edges mode. The render is edge noise across the *entire* frame,
+  trees included — not fixed.
+- **`busy clutter desk.png`** — the exact case PR #20's concentration
+  metric was built to keep out of edges mode. Refined stats flipped it to
+  edges anyway. Also not fixed — actively regressed back to the bug #20
+  had already closed.
+- **`low contrast photo dog.png`** — refined black/white points (141/206
+  vs. the whole-frame 120/255) pushed the render into a dense, saturated
+  block of `@`/`#` characters — arguably a different bad result, not
+  obviously better than the over-stretch it was meant to replace.
+
+The reason, once the renders made it obvious: **the mask only ever fed
+`computeImageStats()`** — it biases which mode/threshold/levels get
+*chosen*, but nothing about rendering itself is mask-aware. Braille/ASCII/
+edges mode all still process every pixel in the frame regardless of what
+the mask found. So even a perfectly accurate subject mask can only ever
+pick a *better-calibrated threshold for the whole image* — it can't stop
+a busy background from being part of "the whole image" once that
+threshold is applied. Threshold tuning was never going to fix "background
+clutter shows up in the render" because the render was never subject-
+aware to begin with; only the number-picking was. Fixing this for real
+would mean the mask actually suppressing/fading background pixels at
+render time — a materially bigger, more visible change to what this tool
+outputs, not a refinement to what settings it picks.
+
+Left this branch of work uncommitted rather than opening a PR for it:
+it's built, it's wired up, the tests are real (a route-blocked default
+page keeps the existing suite fast — see below — plus one dedicated
+unblocked-page test that runs the actual model), but it does not
+demonstrably fix what it was built to fix, and shipping it risked
+presenting a regression as a feature. Recording the negative result here
+instead, since it's the more valuable thing to not lose.
+
+One more concrete cost, found while getting the test suite green: the
+model runs on every auto-suggest call by default, which means every
+existing test that uploads an image now pays ~2-6s for a background
+model call it isn't testing. Fixed by having the shared test setup block
+`vendor/` requests by default (a real stand-in for the `file://`/offline/
+blocked-CDN fallback path, exercised for free by nearly the whole suite)
+and giving the one test that needs the real model its own unblocked page
+— but it's a real tax on iteration speed that a whole-frame heuristic
+never had, independent of whether the mask-based approach even works.
+
 ## Patterns worth remembering
 
 - **Every real bug this project has shipped was found by actually looking
@@ -321,3 +385,11 @@ technical answer.
   ~2-6 seconds of inference time, it was the 13 MB WASM runtime binary
   sitting underneath a 4.4 MB model. Don't let "answer the literal
   question" crowd out "surface what the investigation actually found."
+- **Feeding a better signal into the decision isn't the same as fixing
+  the output.** The saliency mask made `computeImageStats()` smarter, but
+  the renderer never became mask-aware — so "pick a better-calibrated
+  number for the whole frame" could never fix "a busy background shows up
+  in the whole frame." A cleaner input to a heuristic doesn't help if the
+  heuristic's output is spent somewhere the input's benefit can't reach.
+  Building it and looking at the real output on the real failure cases
+  is what caught this, not code review of the diff.

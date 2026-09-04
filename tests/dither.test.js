@@ -251,6 +251,49 @@ test("computeImageStats reports higher edge concentration for a localized subjec
   );
 });
 
+function makeMask(width, height, includedAt) {
+  const mask = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      mask[y * width + x] = includedAt(x, y) ? 1 : 0;
+    }
+  }
+  return mask;
+}
+
+test("computeImageStats with a mask reports stats for only the masked-in pixels", () => {
+  // Left 20 columns are flat mid-grey, right 10 are a busy dark/light
+  // checker - masking in only the flat region should report it as flat
+  // (zero stdev, near-zero edge density) even though the whole-frame stats
+  // would not. Wide enough that the single mask-boundary column (see below)
+  // is a small fraction of the masked-in region.
+  const img = makeImage(30, 10, (x, y) => (x < 20 ? 128 : (x + y) % 2 === 0 ? 0 : 255));
+  const mask = makeMask(30, 10, (x) => x < 20);
+
+  const masked = computeImageStats(img, 30, 10, mask);
+  const wholeFrame = computeImageStats(img, 30, 10);
+
+  assert.equal(masked.mean, 128);
+  assert.equal(masked.stdev, 0);
+  // Not exactly 0: the Sobel kernel samples neighboring pixels regardless of
+  // the mask, so the column right at the mask boundary picks up a sliver of
+  // gradient from the checkerboard just outside it. Still far below the
+  // whole-frame reading, which is the property that matters.
+  assert.ok(masked.edgeDensity < wholeFrame.edgeDensity / 2, `expected masked edge density (${masked.edgeDensity}) to be much lower than whole-frame (${wholeFrame.edgeDensity})`);
+  assert.notEqual(wholeFrame.stdev, 0);
+  assert.notEqual(wholeFrame.edgeDensity, 0);
+});
+
+test("computeImageStats falls back to the whole frame when the mask selects nothing", () => {
+  const img = makeImage(10, 10, (x) => (x < 5 ? 0 : 255));
+  const emptyMask = makeMask(10, 10, () => false);
+
+  const masked = computeImageStats(img, 10, 10, emptyMask);
+  const wholeFrame = computeImageStats(img, 10, 10);
+
+  assert.deepEqual(masked, wholeFrame);
+});
+
 test("suggestLevels stretches the percentile range to fill 0-255", () => {
   assert.deepEqual(suggestLevels({ p2: 50, p98: 200 }), { blackPoint: 50, whitePoint: 200 });
 });

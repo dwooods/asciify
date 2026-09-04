@@ -63,6 +63,12 @@
   // later uploads in the same session get auto-suggested normally.
   let suppressNextAutoSuggest = false;
 
+  // Bumped whenever the image changes (a new upload or Clear image) so a
+  // saliency refinement (see refineAutoSuggestWithSaliency) that resolves
+  // after the image it was computed for is gone can tell it's stale and
+  // discard itself instead of touching a now-unrelated (or absent) image.
+  let autoSuggestGeneration = 0;
+
   // Mirrors the initial values above, so "Reset settings" can restore them
   // without touching the loaded image. Preview size isn't included - like
   // the permalink, it's a local display preference, not part of the art.
@@ -125,6 +131,7 @@
   const loadError = $("#loadError");
   const srStatus = $("#srStatus");
   const suggestField = $("#suggestField");
+  const suggestRefining = $("#suggestRefining");
   const suggestionButtons = { braille: $("#suggestBraille"), ascii: $("#suggestAscii"), edges: $("#suggestEdges") };
   const suggestionPreviewEls = { braille: $("#suggestBraillePreview"), ascii: $("#suggestAsciiPreview"), edges: $("#suggestEdgesPreview") };
 
@@ -144,6 +151,7 @@
 
   function loadFile(file) {
     if (!file) return;
+    autoSuggestGeneration++;
     loadError.style.display = "none";
     imageInfo.textContent = `${file.name} · ${formatBytes(file.size)} · ${file.type || "unknown type"}`;
     image = document.createElement("img");
@@ -168,6 +176,7 @@
   }
 
   clearBtn.addEventListener("click", function () {
+    autoSuggestGeneration++;
     image = null;
     ascii = "";
     filepicker.value = "";
@@ -182,6 +191,7 @@
     emptyState.style.display = "flex";
     srStatus.textContent = "Image cleared.";
     suggestField.style.display = "none";
+    suggestRefining.style.display = "none";
     lastSuggestions = null;
   });
 
@@ -717,8 +727,14 @@
   // because the width slider was touched earlier.
   const statsWorkWidth = 120;
 
-  function computeStatsForImage() {
-    const height = Math.max(1, Math.round(statsWorkWidth * (image.height / image.width)));
+  function statsWorkHeightFor(image) {
+    return Math.max(1, Math.round(statsWorkWidth * (image.height / image.width)));
+  }
+
+  // mask, when given, restricts the stats to a detected subject rather than
+  // the whole frame - see refineAutoSuggestWithSaliency.
+  function computeStatsForImage(mask) {
+    const height = statsWorkHeightFor(image);
     canvas.width = statsWorkWidth;
     canvas.height = height;
 
@@ -730,7 +746,7 @@
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-    return computeImageStats(imageData.data, canvas.width, canvas.height);
+    return computeImageStats(imageData.data, canvas.width, canvas.height, mask);
   }
 
   // A small width for the suggestion thumbnails - just enough to be
@@ -804,16 +820,11 @@
     Object.entries(suggestionButtons).forEach(([key, btn]) => btn.classList.toggle("selected", key === mode));
   }
 
-  // Runs on every fresh image load: measures the image's own stats and
-  // suggests a full settings preset for all three render modes, previews
-  // each as a small thumbnail, and applies the single best-guess mode
-  // live so there's a sensible starting point without any clicking. This
-  // is a heuristic based on image statistics, not real scene
-  // understanding - a reasonable starting point, not a guaranteed-best
-  // artistic choice.
-  function runAutoSuggest() {
-    if (!image) return;
-    const stats = computeStatsForImage();
+  // Computes and applies a full settings suggestion (all three modes
+  // previewed, the best one applied live) from whatever stats it's given -
+  // shared by the instant whole-frame pass in runAutoSuggest and the
+  // deferred subject-only pass in refineAutoSuggestWithSaliency.
+  function applyStatsAsSuggestions(stats) {
     const bestMode = suggestRenderMode(stats);
     const suggestions = {
       braille: suggestSettingsForMode("braille", stats),
@@ -832,6 +843,64 @@
 
     highlightSuggestion(bestMode);
     suggestField.style.display = "";
+    return { bestMode, suggestions };
+  }
+
+  // True if the live settings still exactly match a previously-applied
+  // suggestion - i.e. nothing (the user, a permalink restore, Reset
+  // settings) has changed them since. Guards refineAutoSuggestWithSaliency:
+  // a background refinement should never clobber a choice made after it
+  // started.
+  function currentSettingsMatchSuggestion(settings) {
+    if (renderMode !== settings.renderMode) return false;
+    if (settings.dithererName !== undefined && dithererName !== settings.dithererName) return false;
+    if (settings.threshold !== undefined && threshold !== settings.threshold) return false;
+    if (settings.charsetKey !== undefined && paletteInput.value !== charsetPresets[settings.charsetKey]) return false;
+    if (blackPoint !== settings.blackPoint) return false;
+    if (whitePoint !== settings.whitePoint) return false;
+    return true;
+  }
+
+  // Kicks off the on-device subject-detection model (see saliency.js) in
+  // the background and, if it finds a subject, silently re-suggests using
+  // subject-only stats instead of whole-frame ones - fixing the class of
+  // auto-suggest misses documented in JOURNEY.md where background clutter
+  // or framing skewed the whole-frame reading. Never blocks or delays the
+  // instant whole-frame suggestion runAutoSuggest() already applied; if the
+  // model is unavailable (file://, offline, blocked) or takes too long to
+  // matter, that whole-frame suggestion is exactly what's left in place.
+  function refineAutoSuggestWithSaliency(appliedSettings) {
+    if (!window.AsciifySaliency || !image) return;
+    const generation = autoSuggestGeneration;
+    const targetHeight = statsWorkHeightFor(image);
+    suggestRefining.style.display = "";
+
+    window.AsciifySaliency
+      .detectForegroundMask(image, image.naturalWidth, image.naturalHeight, statsWorkWidth, targetHeight)
+      .then((mask) => {
+        if (generation !== autoSuggestGeneration) return; // image changed/cleared meanwhile
+        suggestRefining.style.display = "none";
+        if (!mask) return; // model unavailable - keep the whole-frame suggestion
+        if (!currentSettingsMatchSuggestion(appliedSettings)) return; // user already moved on
+
+        applyStatsAsSuggestions(computeStatsForImage(mask));
+        srStatus.textContent = "Suggestion refined using on-device subject detection.";
+      });
+  }
+
+  // Runs on every fresh image load: measures the image's own stats and
+  // suggests a full settings preset for all three render modes, previews
+  // each as a small thumbnail, and applies the single best-guess mode
+  // live so there's a sensible starting point without any clicking. This
+  // is a heuristic based on image statistics, not real scene
+  // understanding - a reasonable starting point, not a guaranteed-best
+  // artistic choice. Immediately after, kicks off a slower, optional
+  // refinement pass that narrows the same stats to the image's detected
+  // subject - see refineAutoSuggestWithSaliency.
+  function runAutoSuggest() {
+    if (!image) return;
+    const { bestMode, suggestions } = applyStatsAsSuggestions(computeStatsForImage());
+    refineAutoSuggestWithSaliency(suggestions[bestMode]);
   }
 
   Object.entries(suggestionButtons).forEach(([mode, btn]) => {

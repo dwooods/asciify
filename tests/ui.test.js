@@ -11,7 +11,7 @@ const os = require("node:os");
 const { chromium } = require("playwright");
 
 const ROOT = path.join(__dirname, "..");
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".onnx": "application/octet-stream", ".mjs": "text/javascript" };
 
 const TEST_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFUlEQVQIHWP8z8Dwn4EIwDiqEF0oAJHiAf0DKtA0AAAAAElFTkSuQmCC";
@@ -61,6 +61,15 @@ test.beforeEach(async () => {
   page = await browser.newPage();
   pageErrors = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
+  // On-device subject detection (saliency.js) is a several-MB, ~2-4s-per-
+  // image best-effort enhancement - loading and running it on every test's
+  // upload would balloon the suite from seconds to minutes for no benefit,
+  // since almost none of these tests are testing that feature. Blocking its
+  // vendored runtime here doubles as a realistic "model unavailable"
+  // scenario (the same graceful-degradation path a file:// or offline user
+  // hits) that every other test now implicitly exercises. The one test that
+  // actually needs the real model (below) uses its own unblocked page.
+  await page.route(/\/vendor\//, (route) => route.abort());
   await page.goto(`${baseUrl}/index.html`, { waitUntil: "domcontentloaded" });
 });
 
@@ -153,6 +162,42 @@ test("auto-suggest does not override settings restored from a permalink on the f
   // Auto-suggest is skipped entirely for this first load (not just its
   // effect on the live settings), so the suggestions UI stays hidden.
   assert.equal(await page.isVisible("#suggestField"), false);
+});
+
+test("auto-suggest degrades gracefully when on-device subject detection is unavailable", async () => {
+  // This test's page has vendor/ blocked by the shared beforeEach above -
+  // the same failure mode as file://, offline, or a blocked CDN. The
+  // whole-frame suggestion (and everything downstream of it) must work
+  // exactly as if saliency.js didn't exist, with no uncaught page error
+  // (asserted for every test in afterEach) and the "refining" indicator
+  // never left stuck on.
+  await loadTestImage();
+  assert.equal(await page.isVisible("#suggestField"), true);
+  await page.waitForTimeout(200); // let the rejected detectForegroundMask() settle
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("suggestRefining")).display), "none");
+});
+
+test("auto-suggest refines the suggestion once on-device subject detection finishes", async () => {
+  // Unlike every other test in this file, this one needs the real model to
+  // actually load and run, so it uses its own page rather than the shared
+  // one the beforeEach above deliberately blocks vendor/ on. Model load +
+  // inference measured at ~2-6s in JOURNEY.md - slow for a unit test, which
+  // is exactly why only this one test pays that cost.
+  const ortPage = await browser.newPage();
+  const ortPageErrors = [];
+  ortPage.on("pageerror", (err) => ortPageErrors.push(err.message));
+  await ortPage.goto(`${baseUrl}/index.html`, { waitUntil: "domcontentloaded" });
+  await ortPage.setInputFiles("#filepicker", testImagePath);
+  await ortPage.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+
+  await ortPage.waitForFunction(() => getComputedStyle(document.getElementById("suggestRefining")).display === "none", { timeout: 30000 });
+  assert.equal(
+    await ortPage.textContent("#srStatus"),
+    "Suggestion refined using on-device subject detection."
+  );
+
+  assert.deepEqual(ortPageErrors, []);
+  await ortPage.close();
 });
 
 test("switching to ASCII mode renders using only the palette's characters", async () => {

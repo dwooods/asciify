@@ -35,7 +35,7 @@
         </div>
 
         <div class="field" id="suggestField" style="display:none;">
-          <label>Suggested settings <span class="val">tap to apply</span></label>
+          <label>Suggested settings <span class="val">tap to apply</span> <span class="val" id="suggestRefining" style="display:none;">refining with on-device subject detection…</span></label>
           <div class="suggestions">
             <button class="suggestion" id="suggestBraille" type="button">
               <pre class="suggestion-preview" id="suggestBraillePreview" aria-hidden="true"></pre>
@@ -155,6 +155,8 @@
   </div>
 
   <script src="dither.js"></script>
+  <script src="vendor/onnxruntime-web/ort.min.js"></script>
+  <script src="saliency.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

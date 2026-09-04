@@ -150,11 +150,17 @@
   // suggestRenderMode/suggestSettingsForMode) once real images are tried.
 
   // Builds a 256-bucket luminance histogram from a greyscale RGBA buffer
-  // (R=G=B after the luminosity composite already applied upstream).
-  function computeHistogram(data, width, height) {
+  // (R=G=B after the luminosity composite already applied upstream). When a
+  // mask is given (one byte per pixel, truthy = included), pixels where the
+  // mask is falsy are skipped entirely - used to restrict stats to a
+  // detected subject rather than the whole frame (see computeImageStats).
+  function computeHistogram(data, width, height, mask) {
     const histogram = new Array(256).fill(0);
     const total = width * height;
-    for (let i = 0; i < total; i++) histogram[data[i * 4]]++;
+    for (let i = 0; i < total; i++) {
+      if (mask && !mask[i]) continue;
+      histogram[data[i * 4]]++;
+    }
     return histogram;
   }
 
@@ -175,8 +181,11 @@
   // Splits the image into a grid of blocks and returns the mean normalized
   // Sobel gradient magnitude within each one - the per-region building
   // block for measuring how evenly edges are spread across the image (see
-  // edgeConcentration in computeImageStats).
-  function computeEdgeBlockMeans(data, width, height, blocksX, blocksY) {
+  // edgeConcentration in computeImageStats). A mask (one byte per pixel,
+  // truthy = included) excludes masked-out pixels from both the sum and the
+  // count, so a block that's entirely masked out contributes 0 rather than
+  // skewing the average.
+  function computeEdgeBlockMeans(data, width, height, blocksX, blocksY, mask) {
     const blockW = Math.ceil(width / blocksX);
     const blockH = Math.ceil(height / blocksY);
     const sums = new Array(blocksX * blocksY).fill(0);
@@ -184,6 +193,7 @@
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
+        if (mask && !mask[y * width + x]) continue;
         const { dx, dy } = sobelGradient(data, x, y, width, height);
         const magnitude = Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
         const blockIndex = Math.min(blocksY - 1, Math.floor(y / blockH)) * blocksX + Math.min(blocksX - 1, Math.floor(x / blockW));
@@ -194,6 +204,15 @@
     return sums.map((sum, i) => (counts[i] ? sum / counts[i] : 0));
   }
 
+  // Counts truthy entries in a mask - used to detect a degenerate mask
+  // (nothing selected) so callers can fall back to the whole frame instead
+  // of dividing by zero or reporting stats for zero pixels.
+  function maskPixelCount(mask, length) {
+    let count = 0;
+    for (let i = 0; i < length; i++) if (mask[i]) count++;
+    return count;
+  }
+
   // Aggregate greyscale stats used to auto-suggest render settings:
   // overall brightness and spread (from the histogram), edge density
   // (mean normalized Sobel gradient magnitude - see sobelMaxMagnitude) as
@@ -201,28 +220,40 @@
   // regions, and edge concentration (see below) as a proxy for whether
   // those edges outline a distinct subject or are just spread uniformly
   // across the frame.
-  function computeImageStats(data, width, height) {
-    const histogram = computeHistogram(data, width, height);
+  //
+  // An optional mask (one byte per pixel, truthy = part of the detected
+  // subject) restricts every one of these stats to just the masked-in
+  // pixels, so a busy/textured background can no longer skew the reading
+  // of the actual subject - see saliency.js for where the mask comes from.
+  // A mask with nothing selected (segmentation found no subject) is
+  // treated the same as no mask at all, falling back to the whole frame,
+  // rather than reporting degenerate zero-pixel stats.
+  function computeImageStats(data, width, height, mask) {
     const total = width * height;
+    const effectiveMask = mask && maskPixelCount(mask, total) > 0 ? mask : null;
+    const maskedTotal = effectiveMask ? maskPixelCount(effectiveMask, total) : total;
+
+    const histogram = computeHistogram(data, width, height, effectiveMask);
 
     let sum = 0;
     for (let value = 0; value < 256; value++) sum += value * histogram[value];
-    const mean = sum / total;
+    const mean = sum / maskedTotal;
 
     let sumSquaredDiff = 0;
     for (let value = 0; value < 256; value++) {
       sumSquaredDiff += histogram[value] * (value - mean) * (value - mean);
     }
-    const stdev = Math.sqrt(sumSquaredDiff / total);
+    const stdev = Math.sqrt(sumSquaredDiff / maskedTotal);
 
     let edgeSum = 0;
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
+        if (effectiveMask && !effectiveMask[y * width + x]) continue;
         const { dx, dy } = sobelGradient(data, x, y, width, height);
         edgeSum += Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
       }
     }
-    const edgeDensity = edgeSum / total;
+    const edgeDensity = edgeSum / maskedTotal;
 
     // How UNEVENLY edge energy is spread across the image, as the
     // coefficient of variation (stdev / mean) of edge density across a
@@ -233,7 +264,7 @@
     // testing against a set of real photos where high overall edge
     // density alone wasn't enough to predict a good line-art result (see
     // suggestRenderMode).
-    const blockMeans = computeEdgeBlockMeans(data, width, height, 6, 6);
+    const blockMeans = computeEdgeBlockMeans(data, width, height, 6, 6, effectiveMask);
     const blockMean = blockMeans.reduce((a, b) => a + b, 0) / blockMeans.length;
     const blockSumSquaredDiff = blockMeans.reduce((sum, m) => sum + (m - blockMean) * (m - blockMean), 0);
     const blockStdev = Math.sqrt(blockSumSquaredDiff / blockMeans.length);
