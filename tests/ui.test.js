@@ -282,6 +282,29 @@ test("unchecking Suppress background while detection is still in flight does not
   );
 });
 
+test("the Suppress background info icon toggles a tap/keyboard-accessible popover", async () => {
+  // The native title attribute this icon also carries doesn't reliably show
+  // on mobile tap and isn't keyboard-reachable, hence this separate popover
+  // that script.js toggles explicitly.
+  assert.equal(await page.isVisible("#suppressBackgroundInfoPopover"), false);
+  assert.equal(await page.getAttribute("#suppressBackgroundInfoIcon", "aria-expanded"), "false");
+
+  await page.click("#suppressBackgroundInfoIcon");
+  assert.equal(await page.isVisible("#suppressBackgroundInfoPopover"), true);
+  assert.equal(await page.getAttribute("#suppressBackgroundInfoIcon", "aria-expanded"), "true");
+  assert.ok((await page.textContent("#suppressBackgroundInfoPopover")).length > 0);
+
+  // Clicking elsewhere on the page closes it.
+  await page.click("h1");
+  assert.equal(await page.isVisible("#suppressBackgroundInfoPopover"), false);
+  assert.equal(await page.getAttribute("#suppressBackgroundInfoIcon", "aria-expanded"), "false");
+
+  // Keyboard: Enter while focused opens it too, for users without a pointer.
+  await page.focus("#suppressBackgroundInfoIcon");
+  await page.keyboard.press("Enter");
+  assert.equal(await page.isVisible("#suppressBackgroundInfoPopover"), true);
+});
+
 test("switching to ASCII mode renders using only the palette's characters", async () => {
   await loadTestImage();
   await page.selectOption("#renderMode", "ascii");
@@ -294,14 +317,50 @@ test("switching to ASCII mode renders using only the palette's characters", asyn
   assert.ok([...used].every((c) => palette.includes(c)), "expected only palette characters in ASCII output");
 });
 
-test("Adaptive detail is only offered in ASCII mode", async () => {
+test("Adaptive detail is offered in ASCII and edges mode, not braille", async () => {
   await loadTestImage();
+  await page.selectOption("#renderMode", "braille");
   assert.equal(await page.isVisible("#adaptiveDetailField"), false);
+
   await page.selectOption("#renderMode", "ascii");
   assert.equal(await page.isVisible("#adaptiveDetailField"), true);
   assert.equal(await page.isVisible("#focusRegionField"), false);
   await page.check("#adaptiveDetail");
   assert.equal(await page.isVisible("#focusRegionField"), true);
+
+  await page.selectOption("#renderMode", "edges");
+  assert.equal(await page.isVisible("#adaptiveDetailField"), true);
+  assert.equal(await page.isVisible("#focusRegionField"), true, "the checkbox state should carry over across modes");
+});
+
+test("Adaptive detail raises the effective edge threshold in busy areas, reducing edges-mode clutter", async () => {
+  // The gating is the same complexity map ASCII's adaptive detail uses, but
+  // inverted in effect: a busy edges-mode cell (fine texture, a cluster of
+  // close parallel lines) gets a higher effective threshold so only the
+  // strongest lines survive, rather than a richer character ramp.
+  await page.setInputFiles("#filepicker", photoImagePath);
+  await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await page.selectOption("#renderMode", "edges");
+  await page.waitForTimeout(150);
+  const before = await page.evaluate(() => document.getElementById("output").innerText);
+  const countNonSpace = (text) => [...text].filter((c) => c !== " " && c !== "\n").length;
+
+  await page.check("#adaptiveDetail");
+  await page.waitForTimeout(150);
+  const after = await page.evaluate(() => document.getElementById("output").innerText);
+
+  assert.notEqual(after, before, "expected adaptive detail to change the edges-mode render");
+  assert.ok(
+    countNonSpace(after) < countNonSpace(before),
+    "expected adaptive detail to reduce, not increase, edge-character density"
+  );
+  const used = new Set(after.replace(/\n/g, ""));
+  assert.ok([...used].every((c) => "-|/\\ ".includes(c)), "expected only edge characters or blanks");
+
+  // Unchecking restores the original render.
+  await page.uncheck("#adaptiveDetail");
+  await page.waitForTimeout(150);
+  assert.equal(await page.evaluate(() => document.getElementById("output").innerText), before);
 });
 
 test("Adaptive detail changes the ASCII render while keeping only palette characters", async () => {
@@ -352,6 +411,52 @@ test("drawing and clearing a focus area updates status and the ASCII render", as
   await page.waitForTimeout(150);
   assert.equal(await page.textContent("#focusRegionStatus"), "optional - always full detail");
   assert.equal(await page.evaluate(() => document.getElementById("output").innerText), withoutRegion);
+});
+
+test("drawing a focus area via touch events works the same as via mouse", async () => {
+  // Regression coverage for touch support added alongside the mouse-based
+  // drag handlers above - dispatches real TouchEvents rather than using
+  // page.tap()/page.touchscreen, since those simulate hit-tested pointer
+  // input and this page isn't loaded with a touch-capable browser context.
+  await page.setInputFiles("#filepicker", photoImagePath);
+  await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await page.selectOption("#renderMode", "ascii");
+  await page.check("#adaptiveDetail");
+  await page.waitForTimeout(150);
+  const withoutRegion = await page.evaluate(() => document.getElementById("output").innerText);
+
+  await page.click("#drawFocusBtn");
+  await page.locator("#focusCanvas").scrollIntoViewIfNeeded();
+  const box = await page.locator("#focusCanvas").boundingBox();
+  await page.evaluate(
+    ({ x0, y0, x1, y1 }) => {
+      const canvas = document.getElementById("focusCanvas");
+      function fire(type, x, y) {
+        const touch = new Touch({ identifier: 1, target: canvas, clientX: x, clientY: y });
+        canvas.dispatchEvent(
+          new TouchEvent(type, {
+            touches: type === "touchend" ? [] : [touch],
+            changedTouches: [touch],
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      }
+      fire("touchstart", x0, y0);
+      fire("touchmove", x1, y1);
+      fire("touchend", x1, y1);
+    },
+    { x0: box.x + box.width * 0.1, y0: box.y + box.height * 0.1, x1: box.x + box.width * 0.9, y1: box.y + box.height * 0.9 }
+  );
+  await page.waitForTimeout(150);
+
+  assert.equal(await page.textContent("#focusRegionStatus"), "set - tap Clear to remove");
+  const withRegion = await page.evaluate(() => document.getElementById("output").innerText);
+  assert.notEqual(withRegion, withoutRegion, "expected a touch-drawn focus region to change the render");
+
+  await page.click("#clearFocusBtn");
+  await page.waitForTimeout(150);
+  assert.equal(await page.textContent("#focusRegionStatus"), "optional - always full detail");
 });
 
 test("adaptive detail and a focus area round-trip through the settings permalink", async () => {
@@ -414,6 +519,24 @@ test("dropping an image loads it the same as the file picker", async () => {
     dropzone.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
   }, base64);
   await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+});
+
+test("the panel does not overflow a narrow viewport once suggestions are shown", async () => {
+  // Regression test: .panel (a CSS grid item) and its flex-row suggestion
+  // previews (non-wrapping <pre> elements) both defaulted to min-width:auto,
+  // so their content's intrinsic width silently widened the whole page past
+  // the viewport on narrow/mobile screens - not visible on desktop, and only
+  // caught by actually measuring layout at a mobile width, exactly the kind
+  // of check CLAUDE.md's working process calls for beyond "the code compiles".
+  const narrowPage = await browser.newPage({ viewport: { width: 412, height: 900 } });
+  await narrowPage.goto(`${baseUrl}/index.html`, { waitUntil: "domcontentloaded" });
+  await narrowPage.setInputFiles("#filepicker", testImagePath);
+  await narrowPage.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await narrowPage.waitForTimeout(100);
+
+  const overflowed = await narrowPage.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  assert.equal(overflowed, false, "expected no horizontal overflow at a narrow viewport width");
+  await narrowPage.close();
 });
 
 test("uploading a non-image file shows a load error instead of silently doing nothing", async () => {

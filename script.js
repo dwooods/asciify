@@ -138,6 +138,7 @@
   const paletteField = $("#paletteField");
   const adaptiveDetailField = $("#adaptiveDetailField");
   const adaptiveDetailInput = $("#adaptiveDetail");
+  const adaptiveDetailDesc = $("#adaptiveDetailDesc");
   const focusRegionField = $("#focusRegionField");
   const focusRegionStatus = $("#focusRegionStatus");
   const drawFocusBtn = $("#drawFocusBtn");
@@ -163,6 +164,8 @@
   const invertInput = $("#invert");
   const suppressBackgroundInput = $("#suppressBackground");
   const suppressBackgroundStatus = $("#suppressBackgroundStatus");
+  const suppressBackgroundInfoIcon = $("#suppressBackgroundInfoIcon");
+  const suppressBackgroundInfoPopover = $("#suppressBackgroundInfoPopover");
   const resetBtn = $("#resetBtn");
   const output = $("#output");
   const emptyState = $("#emptyState");
@@ -310,8 +313,10 @@
     invertField.style.display = renderMode === "edges" ? "none" : "";
     charsetField.style.display = renderMode === "ascii" ? "" : "none";
     paletteField.style.display = renderMode === "ascii" ? "" : "none";
-    adaptiveDetailField.style.display = renderMode === "ascii" ? "" : "none";
-    focusRegionField.style.display = renderMode === "ascii" && adaptiveDetail ? "" : "none";
+    adaptiveDetailField.style.display = renderMode === "ascii" || renderMode === "edges" ? "" : "none";
+    focusRegionField.style.display = (renderMode === "ascii" || renderMode === "edges") && adaptiveDetail ? "" : "none";
+    adaptiveDetailDesc.textContent =
+      renderMode === "edges" ? "fewer stray lines in busy areas" : "full palette in busy areas, simplified elsewhere";
   }
 
   // If the palette box no longer matches a known preset, reflect that as
@@ -457,6 +462,28 @@
     requestSubjectMask();
   });
 
+  // Tap/keyboard fallback for the info icon's native title tooltip - most
+  // mobile browsers don't show `title` on tap at all, and it's unreachable
+  // without a pointer for keyboard users. Click toggles it; blur or Escape
+  // closes it, matching the "help" affordance the desktop hover already
+  // gives without stepping on it.
+  function toggleSuppressBackgroundInfo(show) {
+    const next = show ?? suppressBackgroundInfoPopover.style.display === "none";
+    suppressBackgroundInfoPopover.style.display = next ? "block" : "none";
+    suppressBackgroundInfoIcon.setAttribute("aria-expanded", String(next));
+  }
+
+  suppressBackgroundInfoIcon.addEventListener("click", () => toggleSuppressBackgroundInfo());
+  suppressBackgroundInfoIcon.addEventListener("keydown", function (evt) {
+    if (evt.key !== "Enter" && evt.key !== " ") return;
+    evt.preventDefault();
+    toggleSuppressBackgroundInfo();
+  });
+  suppressBackgroundInfoIcon.addEventListener("blur", () => toggleSuppressBackgroundInfo(false));
+  document.addEventListener("click", (evt) => {
+    if (evt.target !== suppressBackgroundInfoIcon) toggleSuppressBackgroundInfo(false);
+  });
+
   adaptiveDetailInput.addEventListener("change", function () {
     adaptiveDetail = this.checked;
     applyRenderModeVisibility();
@@ -537,28 +564,71 @@
     render();
   });
 
-  focusCanvas.addEventListener("mousedown", function (evt) {
+  // Shared by both mouse and touch input, so dragging a focus rectangle
+  // works the same way (and is tested the same way) regardless of device.
+  function startFocusDrag(point) {
     if (!drawingFocus) return;
-    focusDragStart = focusPointFromEvent(evt);
-  });
+    focusDragStart = point;
+  }
 
-  focusCanvas.addEventListener("mousemove", function (evt) {
+  function updateFocusDrag(point) {
     if (!drawingFocus || !focusDragStart) return;
-    focusRegion = normalizedRegionFrom(focusDragStart, focusPointFromEvent(evt));
+    focusRegion = normalizedRegionFrom(focusDragStart, point);
     updateFocusOverlay();
-  });
+  }
 
-  focusCanvas.addEventListener("mouseup", function (evt) {
+  function finishFocusDrag(point) {
     if (!drawingFocus || !focusDragStart) return;
-    const region = normalizedRegionFrom(focusDragStart, focusPointFromEvent(evt));
-    // A click without a real drag draws a degenerate sliver - treat it as
-    // "no region" rather than leaving an invisible, effectively-empty one.
+    const region = normalizedRegionFrom(focusDragStart, point);
+    // A tap/click without a real drag draws a degenerate sliver - treat it
+    // as "no region" rather than leaving an invisible, effectively-empty one.
     focusRegion = region.x1 - region.x0 >= 0.02 && region.y1 - region.y0 >= 0.02 ? region : null;
     cancelFocusDrawing();
     updateFocusOverlay();
     updateUrl();
     render();
-  });
+  }
+
+  function focusPointFromTouch(evt) {
+    const touch = evt.touches[0] || evt.changedTouches[0];
+    return focusPointFromEvent({ clientX: touch.clientX, clientY: touch.clientY });
+  }
+
+  focusCanvas.addEventListener("mousedown", (evt) => startFocusDrag(focusPointFromEvent(evt)));
+  focusCanvas.addEventListener("mousemove", (evt) => updateFocusDrag(focusPointFromEvent(evt)));
+  focusCanvas.addEventListener("mouseup", (evt) => finishFocusDrag(focusPointFromEvent(evt)));
+
+  // Touch equivalents - preventDefault while actively drawing so dragging a
+  // finger across the canvas draws a rectangle instead of scrolling the
+  // page. Only suppressed while drawingFocus is true, so touch scrolling
+  // elsewhere on the page (and taps that aren't drawing) are unaffected.
+  focusCanvas.addEventListener(
+    "touchstart",
+    (evt) => {
+      if (!drawingFocus) return;
+      evt.preventDefault();
+      startFocusDrag(focusPointFromTouch(evt));
+    },
+    { passive: false }
+  );
+  focusCanvas.addEventListener(
+    "touchmove",
+    (evt) => {
+      if (!drawingFocus) return;
+      evt.preventDefault();
+      updateFocusDrag(focusPointFromTouch(evt));
+    },
+    { passive: false }
+  );
+  focusCanvas.addEventListener(
+    "touchend",
+    (evt) => {
+      if (!drawingFocus) return;
+      evt.preventDefault();
+      finishFocusDrag(focusPointFromTouch(evt));
+    },
+    { passive: false }
+  );
 
   // True if (x, y) in a width x height render buffer falls inside the
   // user-drawn focus region (see above) - false (never forced) when no
@@ -925,11 +995,25 @@
     finalizeOutput(computeAsciiLines());
   }
 
+  // How much higher the effective edge threshold gets in a "busy" cell (see
+  // adaptiveDetailThreshold/computeComplexityMap) - on the same raw scale as
+  // the Threshold slider (0-254). Dense parallel lines (a grille, a tread
+  // pattern) or fine texture (fur, foliage) alias into visual noise once
+  // downsampled to the character grid; raising the bar there keeps only the
+  // strongest lines instead of a jumble, while flat regions keep the
+  // slider's own threshold untouched. Calibrated by eye against
+  // test-assets/truck.jpg (grille/tread), car.jpg, and high contrast
+  // tiger.png (stripe texture) - 60+ started erasing real outline structure
+  // along with the noise; 40 was the highest value that still visibly
+  // decluttered without doing that.
+  const edgesAdaptiveThresholdBoost = 40;
+
   function computeEdgesLines() {
     // Reuses the "Threshold" slider as edge sensitivity: a Sobel gradient's
     // magnitude is normalized to roughly the same 0-255 range that slider
     // already covers for the dithering threshold (see sobelMaxMagnitude).
     const { data, width, height } = prepareCharacterGrid();
+    const complexity = adaptiveDetail ? computeComplexityMap(data, width, height, adaptiveDetailWindowRadius) : null;
     const lines = [];
     for (let y = 0; y < height; y++) {
       let line = "";
@@ -939,7 +1023,8 @@
           continue;
         }
         const { dx, dy } = sobelGradient(data, x, y, width, height);
-        line += edgeChar(dx, dy, threshold);
+        const busy = complexity && complexity[y * width + x] >= adaptiveDetailThreshold && !isInFocusRegion(x, y, width, height);
+        line += edgeChar(dx, dy, busy ? threshold + edgesAdaptiveThresholdBoost : threshold);
       }
       lines.push(line);
     }
