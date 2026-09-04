@@ -557,28 +557,59 @@ that only showed up by actually using the feature, not by reading the diff.
   reads as fur afterward, on an image that was never part of the original
   bug report.
 
-**Line-art auto-suggest misclassification - investigated, not shipped.**
-truck.jpg and five similar coloring-book-style uploads (spaceship, dog,
-house, boat, car) render far better in braille mode than edges mode - the
-opposite of the edges-threshold heuristic's fix in the earlier phase - but
-auto-suggest's `edgeDensity > 40` rule picks edges mode for them anyway,
-since dense outline art scores just as high on raw edge density as a real
-photo's edges do. Gathered real stats (near-white fraction, midtone
-fraction, and a near-white+near-black "extreme" fraction) across all 26
-test-assets images looking for a signal that separates "line art" from
-"photo where edges mode is actually correct." None had a safe margin -
-`house.jpg`, the least line-art-like of the new uploads, sat within
-0.01-0.04 of images already correctly classified as edges mode
-(`star wars.png`, `high contrast woman.png`, `screenshot photo.png`). Per
-the concentration-metric lesson above (a clean separation in a small
-sample is a signal, not proof), declined to ship a threshold this close to
-existing correct cases on six new examples. The edges-mode adaptive-detail
-work above (this same phase) is a partial, complementary answer - it
-reduces edges mode's noise on this exact kind of image rather than needing
-to first correctly guess "is this line art" at the mode-selection level -
-but doesn't fully close the gap, since braille mode is still the visibly
-better result for these images and auto-suggest still won't reach for it.
-Left as an open question rather than a shipped fix.
+**Line-art auto-suggest misclassification - investigated across two
+sessions, resolved in the second.** truck.jpg and five similar
+coloring-book-style uploads (spaceship, dog, house, boat, car) render far
+better in braille mode than edges mode - the opposite of the
+edges-threshold heuristic's fix in an earlier phase - but auto-suggest's
+`edgeDensity`/`edgeConcentration` rule picked edges mode for them anyway,
+since dense outline art scores just as high on raw edge density, and just
+as *concentrated* on its subject, as a real photo's edges do.
+
+First pass: gathered real stats (near-white fraction, midtone fraction, a
+near-white+near-black "extreme" fraction) across all 26 test-assets images
+at the time, looking for a signal that separates "line art" from "photo
+where edges mode is actually correct." None had a safe margin -
+`house.jpg`, the least line-art-like of the six, sat within 0.01-0.04 of
+images already correctly classified as edges mode. Declined to ship a
+threshold that close, per the concentration-metric lesson above, and left
+it as an open question.
+
+Second pass, after the edges-mode adaptive-detail work above and three new
+technical-drawing test images (tech boat/car/house.jpg - pure thin-outline
+schematics) landed: re-ran the same kind of stats gather against the
+now-larger set, and used the new images to sanity-check that the "problem"
+wasn't edge detection failing on line art in general - the tech drawings
+already correctly suggested braille (their outlines are too sparse to
+clear the existing `edgeDensity > 20` bar in the first place), and a
+side-by-side render confirmed braille genuinely does look better than
+edges there too, same as the coloring-book set. So the target was never
+"make edges mode work on line art" - it was specifically "stop picking
+edges mode for images that are *already* line art." Tried histogram
+entropy (Shannon entropy of the luminance histogram) as a new candidate,
+reasoning that a flat-shaded illustration is built from a handful of
+dominant tones (a fill, an outline, maybe one shading tone) while a real
+photo spreads real mass across most of the 0-255 range from sensor noise
+and lighting gradients alone, even in a "flat" region. This one actually
+separated cleanly: all six coloring-book uploads scored <= 5.01, all six
+real photos that genuinely render well as line art scored >= 5.52 - a real
+~0.5 gap, an order of magnitude wider than any edge-density-based signal
+produced. Shipped as a third condition (`entropy >= 5.3`) on top of the
+existing two, in `dither.js`'s `computeImageStats`/`suggestRenderMode`.
+Verified against the live app, not just the stats: all six previously-
+misclassified uploads now suggest braille, all six correct edges-mode
+photos are unaffected.
+
+Worth naming why the first pass's signals failed and this one didn't: near-
+white/midtone/extreme fractions are all measuring *how much of the image
+is background vs. subject* - a property real photos and line art share
+about equally, since both can have a plain background and a detailed
+subject. Entropy measures something else entirely - *how many distinct
+tones the image is built from* - which is genuinely different between
+"illustration" and "photograph" regardless of how much background either
+one has. The earlier attempts weren't a wasted first pass so much as
+narrowing down what dimension of difference wasn't the right one to
+measure.
 
 ## Patterns worth remembering
 
