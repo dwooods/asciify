@@ -21,6 +21,11 @@ let baseUrl;
 let browser;
 let testImagePath;
 let testTextPath;
+// A real photo (not the tiny synthetic fixture above) with both a detailed
+// subject and a much flatter background - needed for adaptive-detail tests,
+// since the tiny fixture doesn't have enough tonal range for the complexity
+// map to meaningfully distinguish "busy" from "flat" regions within it.
+const photoImagePath = path.join(ROOT, "test-assets", "soft portrait woman.png");
 
 test.before(async () => {
   server = http.createServer((req, res) => {
@@ -98,6 +103,8 @@ test("a fresh load with no query string shows the fields correct for the default
   assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("thresholdField")).display), "block");
   assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("charsetField")).display), "none");
   assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("paletteField")).display), "none");
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("adaptiveDetailField")).display), "none");
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("focusRegionField")).display), "none");
 });
 
 test("uploading a valid image renders output and hides the empty state", async () => {
@@ -285,6 +292,88 @@ test("switching to ASCII mode renders using only the palette's characters", asyn
   ]);
   const used = new Set(text.replace(/\n/g, ""));
   assert.ok([...used].every((c) => palette.includes(c)), "expected only palette characters in ASCII output");
+});
+
+test("Adaptive detail is only offered in ASCII mode", async () => {
+  await loadTestImage();
+  assert.equal(await page.isVisible("#adaptiveDetailField"), false);
+  await page.selectOption("#renderMode", "ascii");
+  assert.equal(await page.isVisible("#adaptiveDetailField"), true);
+  assert.equal(await page.isVisible("#focusRegionField"), false);
+  await page.check("#adaptiveDetail");
+  assert.equal(await page.isVisible("#focusRegionField"), true);
+});
+
+test("Adaptive detail changes the ASCII render while keeping only palette characters", async () => {
+  await page.setInputFiles("#filepicker", photoImagePath);
+  await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await page.selectOption("#renderMode", "ascii");
+  await page.waitForTimeout(150);
+  const before = await page.evaluate(() => document.getElementById("output").innerText);
+
+  await page.check("#adaptiveDetail");
+  await page.waitForTimeout(150);
+  const after = await page.evaluate(() => document.getElementById("output").innerText);
+
+  assert.notEqual(after, before, "expected adaptive detail to change the rendered output");
+  const palette = await page.inputValue("#palette");
+  const used = new Set(after.replace(/\n/g, ""));
+  assert.ok([...used].every((c) => palette.includes(c)), "expected the reduced ramp to still be a subset of the palette");
+
+  // Unchecking restores the original render.
+  await page.uncheck("#adaptiveDetail");
+  await page.waitForTimeout(150);
+  assert.equal(await page.evaluate(() => document.getElementById("output").innerText), before);
+});
+
+test("drawing and clearing a focus area updates status and the ASCII render", async () => {
+  await page.setInputFiles("#filepicker", photoImagePath);
+  await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await page.selectOption("#renderMode", "ascii");
+  await page.check("#adaptiveDetail");
+  await page.waitForTimeout(150);
+  const withoutRegion = await page.evaluate(() => document.getElementById("output").innerText);
+  assert.equal(await page.textContent("#focusRegionStatus"), "optional - always full detail");
+
+  await page.click("#drawFocusBtn");
+  await page.locator("#focusCanvas").scrollIntoViewIfNeeded();
+  const box = await page.locator("#focusCanvas").boundingBox();
+  await page.mouse.move(box.x + box.width * 0.1, box.y + box.height * 0.1);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.9, box.y + box.height * 0.9, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForTimeout(150);
+
+  assert.equal(await page.textContent("#focusRegionStatus"), "set - tap Clear to remove");
+  const withRegion = await page.evaluate(() => document.getElementById("output").innerText);
+  assert.notEqual(withRegion, withoutRegion, "expected drawing a focus region to change the render");
+
+  await page.click("#clearFocusBtn");
+  await page.waitForTimeout(150);
+  assert.equal(await page.textContent("#focusRegionStatus"), "optional - always full detail");
+  assert.equal(await page.evaluate(() => document.getElementById("output").innerText), withoutRegion);
+});
+
+test("adaptive detail and a focus area round-trip through the settings permalink", async () => {
+  await page.goto(`${baseUrl}/index.html?mode=ascii&adaptive=1&focus=0.100,0.200,0.800,0.900`, { waitUntil: "domcontentloaded" });
+  assert.equal(await page.isChecked("#adaptiveDetail"), true);
+  assert.equal(await page.isVisible("#focusRegionField"), true);
+
+  // The overlay (and its status text) only actually draws once there's an
+  // image to draw it over - same as the suggestions field staying hidden
+  // until upload.
+  await loadTestImage();
+  assert.equal(await page.textContent("#focusRegionStatus"), "set - tap Clear to remove");
+
+  const url = new URL(page.url());
+  assert.equal(url.searchParams.get("adaptive"), "1");
+  assert.equal(url.searchParams.get("focus"), "0.100,0.200,0.800,0.900");
+});
+
+test("a malformed focus permalink parameter is ignored rather than crashing the page", async () => {
+  await page.goto(`${baseUrl}/index.html?mode=ascii&adaptive=1&focus=not,valid,coords`, { waitUntil: "domcontentloaded" });
+  assert.equal(await page.isChecked("#adaptiveDetail"), true);
+  assert.equal(await page.textContent("#focusRegionStatus"), "optional - always full detail");
 });
 
 test("switching to edges mode renders using only line-drawing characters or blanks", async () => {

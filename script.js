@@ -17,6 +17,7 @@
     luminanceToChar,
     sobelGradient,
     edgeChar,
+    computeComplexityMap,
     adjustLevels,
     computeImageStats,
     suggestRenderMode,
@@ -54,6 +55,14 @@
   let blackPoint = 0;
   let whitePoint = 255;
   let suppressBackground = false;
+  // ASCII mode only: when true, computeAsciiLines() uses a reduced 3-
+  // character ramp in visually flat/simple cells and the full palette in
+  // busy ones, instead of always using the full palette everywhere.
+  let adaptiveDetail = false;
+  // A user-drawn rectangle (normalized 0-1 image coordinates, or null) that
+  // always gets the full palette regardless of measured complexity - set by
+  // dragging on the thumbnail overlay (see focusCanvas's listeners below).
+  let focusRegion = null;
   let image = null;
   let ascii = "";
   let lastSuggestions = null;
@@ -113,6 +122,7 @@
     whitePoint: 255,
     palette: asciiRamp,
     suppressBackground: false,
+    adaptiveDetail: false,
   };
 
   const canvas = document.createElement("canvas");
@@ -126,6 +136,14 @@
   const invertField = $("#invertField");
   const charsetField = $("#charsetField");
   const paletteField = $("#paletteField");
+  const adaptiveDetailField = $("#adaptiveDetailField");
+  const adaptiveDetailInput = $("#adaptiveDetail");
+  const focusRegionField = $("#focusRegionField");
+  const focusRegionStatus = $("#focusRegionStatus");
+  const drawFocusBtn = $("#drawFocusBtn");
+  const clearFocusBtn = $("#clearFocusBtn");
+  const thumbImgWrap = $("#thumbImgWrap");
+  const focusCanvas = $("#focusCanvas");
   const ditherSel = $("#dither");
   const thresholdInput = $("#threshold");
   const thresholdVal = $("#thresholdVal");
@@ -188,12 +206,20 @@
     image = document.createElement("img");
     image.onload = () => {
       imageInfo.textContent += ` · ${image.naturalWidth}×${image.naturalHeight}px`;
+      sizeFocusCanvasToImage();
       if (suppressNextAutoSuggest) {
+        // A permalink's focusRegion (if any) belongs to this first image,
+        // same as the settings suppressNextAutoSuggest itself protects -
+        // don't clear it out from under a link that was shared to restore it.
         suppressNextAutoSuggest = false;
         render();
       } else {
+        // Any later upload's focus region is about the previous image's
+        // content, not this one.
+        focusRegion = null;
         runAutoSuggest();
       }
+      updateFocusOverlay();
       if (suppressBackground) requestSubjectMask();
     };
     // file.type isn't a reliable gate (it can be empty for legitimate images
@@ -212,6 +238,9 @@
     subjectMask = null;
     subjectMaskPending = false;
     resetSuppressBackgroundStatus();
+    focusRegion = null;
+    cancelFocusDrawing();
+    updateFocusOverlay();
     image = null;
     ascii = "";
     filepicker.value = "";
@@ -281,6 +310,8 @@
     invertField.style.display = renderMode === "edges" ? "none" : "";
     charsetField.style.display = renderMode === "ascii" ? "" : "none";
     paletteField.style.display = renderMode === "ascii" ? "" : "none";
+    adaptiveDetailField.style.display = renderMode === "ascii" ? "" : "none";
+    focusRegionField.style.display = renderMode === "ascii" && adaptiveDetail ? "" : "none";
   }
 
   // If the palette box no longer matches a known preset, reflect that as
@@ -294,6 +325,7 @@
   renderModeSel.addEventListener("change", function () {
     if (this.value === renderMode) return;
     renderMode = this.value;
+    if (renderMode !== "ascii") cancelFocusDrawing();
     applyRenderModeVisibility();
     updateUrl();
     render();
@@ -425,6 +457,118 @@
     requestSubjectMask();
   });
 
+  adaptiveDetailInput.addEventListener("change", function () {
+    adaptiveDetail = this.checked;
+    applyRenderModeVisibility();
+    if (!adaptiveDetail) {
+      cancelFocusDrawing();
+      focusRegion = null;
+      updateFocusOverlay();
+    }
+    updateUrl();
+    render();
+  });
+
+  // Manual focus area: a user-drawn rectangle on the thumbnail that always
+  // gets the full character palette in Adaptive detail, regardless of what
+  // the automatic complexity measurement finds there - the "user overrides
+  // the heuristic" half of adaptive detail, distinct from (and layered on
+  // top of) the automatic half.
+  let drawingFocus = false;
+  let focusDragStart = null;
+
+  function sizeFocusCanvasToImage() {
+    focusCanvas.width = thumbImgWrap.clientWidth;
+    focusCanvas.height = thumbImgWrap.clientHeight;
+  }
+
+  function focusPointFromEvent(evt) {
+    const rect = focusCanvas.getBoundingClientRect();
+    return {
+      x: Math.min(1, Math.max(0, (evt.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (evt.clientY - rect.top) / rect.height)),
+    };
+  }
+
+  function normalizedRegionFrom(a, b) {
+    return { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) };
+  }
+
+  function cancelFocusDrawing() {
+    drawingFocus = false;
+    focusDragStart = null;
+    focusCanvas.classList.remove("drawing");
+  }
+
+  function updateFocusOverlay() {
+    focusCanvas.classList.toggle("has-region", !!focusRegion && !drawingFocus);
+    const ctx = focusCanvas.getContext("2d");
+    ctx.clearRect(0, 0, focusCanvas.width, focusCanvas.height);
+    if (!focusRegion) {
+      focusRegionStatus.textContent = "optional - always full detail";
+      return;
+    }
+    ctx.strokeStyle = "#e05a2b";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(
+      focusRegion.x0 * focusCanvas.width,
+      focusRegion.y0 * focusCanvas.height,
+      (focusRegion.x1 - focusRegion.x0) * focusCanvas.width,
+      (focusRegion.y1 - focusRegion.y0) * focusCanvas.height
+    );
+    focusRegionStatus.textContent = "set - tap Clear to remove";
+  }
+
+  drawFocusBtn.addEventListener("click", function () {
+    if (!image) return;
+    sizeFocusCanvasToImage();
+    drawingFocus = true;
+    focusDragStart = null;
+    focusCanvas.classList.add("drawing");
+    updateFocusOverlay();
+  });
+
+  clearFocusBtn.addEventListener("click", function () {
+    focusRegion = null;
+    cancelFocusDrawing();
+    updateFocusOverlay();
+    updateUrl();
+    render();
+  });
+
+  focusCanvas.addEventListener("mousedown", function (evt) {
+    if (!drawingFocus) return;
+    focusDragStart = focusPointFromEvent(evt);
+  });
+
+  focusCanvas.addEventListener("mousemove", function (evt) {
+    if (!drawingFocus || !focusDragStart) return;
+    focusRegion = normalizedRegionFrom(focusDragStart, focusPointFromEvent(evt));
+    updateFocusOverlay();
+  });
+
+  focusCanvas.addEventListener("mouseup", function (evt) {
+    if (!drawingFocus || !focusDragStart) return;
+    const region = normalizedRegionFrom(focusDragStart, focusPointFromEvent(evt));
+    // A click without a real drag draws a degenerate sliver - treat it as
+    // "no region" rather than leaving an invisible, effectively-empty one.
+    focusRegion = region.x1 - region.x0 >= 0.02 && region.y1 - region.y0 >= 0.02 ? region : null;
+    cancelFocusDrawing();
+    updateFocusOverlay();
+    updateUrl();
+    render();
+  });
+
+  // True if (x, y) in a width x height render buffer falls inside the
+  // user-drawn focus region (see above) - false (never forced) when no
+  // region is set, so this is always safe to call unconditionally.
+  function isInFocusRegion(x, y, width, height) {
+    if (!focusRegion) return false;
+    const fx = x / width, fy = y / height;
+    return fx >= focusRegion.x0 && fx <= focusRegion.x1 && fy >= focusRegion.y0 && fy <= focusRegion.y1;
+  }
+
   // Restores every adjustment to its default, keeping the loaded image (if
   // any) in place, so a heavily-tweaked image can be started over cleanly
   // without re-uploading it.
@@ -471,6 +615,13 @@
     suppressBackgroundInput.checked = suppressBackground;
     subjectMask = null;
     resetSuppressBackgroundStatus();
+
+    adaptiveDetail = DEFAULTS.adaptiveDetail;
+    adaptiveDetailInput.checked = adaptiveDetail;
+    focusRegion = null;
+    cancelFocusDrawing();
+    updateFocusOverlay();
+    applyRenderModeVisibility();
 
     updateUrl();
     if (image) {
@@ -725,16 +876,45 @@
     return imageData;
   }
 
+  // Window radius (in character-grid cells) computeComplexityMap() looks at
+  // around each cell - "3-5 pixel window" at this grid's resolution.
+  const adaptiveDetailWindowRadius = 2;
+
+  // A cell's complexity score (see computeComplexityMap in dither.js) at or
+  // above this counts as "busy enough" for the full palette; below it, the
+  // reduced ramp applies instead. Calibrated by eye against real photos:
+  // low enough that ordinary subject detail still gets the full ramp, high
+  // enough that faint background grain/gradients collapse to the reduced
+  // one instead of flickering between adjacent ramp characters.
+  const adaptiveDetailThreshold = 0.12;
+
+  // Collapses a ramp to 3 characters (darkest, middle, lightest) spanning
+  // the same range - enough to still read as light/mid/dark shading, with
+  // far less tonal jitter than the full ramp on near-flat input. Ramps of
+  // 3 characters or fewer are already "reduced", so they're used as-is.
+  function reducedRamp(ramp) {
+    if (ramp.length <= 3) return ramp;
+    return ramp[0] + ramp[Math.floor((ramp.length - 1) / 2)] + ramp[ramp.length - 1];
+  }
+
   function computeAsciiLines() {
     // Falls back to the standard ramp if the palette box is emptied out -
     // an empty ramp has no valid character to index into.
     const ramp = paletteInput.value || asciiRamp;
+    const simplifiedRamp = reducedRamp(ramp);
     const { data, width, height } = prepareCharacterGrid();
+    const complexity = adaptiveDetail ? computeComplexityMap(data, width, height, adaptiveDetailWindowRadius) : null;
+
     const lines = [];
     for (let y = 0; y < height; y++) {
       let line = "";
       for (let x = 0; x < width; x++) {
-        line += isBackgroundPixel(x, y, width, height) ? " " : luminanceToChar(data[rgbaOffset(x, y, width)], ramp, invert);
+        if (isBackgroundPixel(x, y, width, height)) {
+          line += " ";
+          continue;
+        }
+        const useReduced = complexity && complexity[y * width + x] < adaptiveDetailThreshold && !isInFocusRegion(x, y, width, height);
+        line += luminanceToChar(data[rgbaOffset(x, y, width)], useReduced ? simplifiedRamp : ramp, invert);
       }
       lines.push(line);
     }
@@ -1013,6 +1193,13 @@
     if (whitePoint !== 255) params.set("white", whitePoint);
     if (invert) params.set("invert", "1");
     if (suppressBackground) params.set("suppress", "1");
+    if (adaptiveDetail) {
+      params.set("adaptive", "1");
+      if (focusRegion) {
+        const r = focusRegion;
+        params.set("focus", [r.x0, r.y0, r.x1, r.y1].map((v) => v.toFixed(3)).join(","));
+      }
+    }
 
     const query = params.toString();
     history.replaceState(null, "", query ? `?${query}` : location.pathname);
@@ -1111,6 +1298,20 @@
     if (params.get("suppress") === "1") {
       suppressBackground = true;
       suppressBackgroundInput.checked = true;
+    }
+
+    if (params.get("adaptive") === "1") {
+      adaptiveDetail = true;
+      adaptiveDetailInput.checked = true;
+
+      const focusParam = params.get("focus");
+      if (focusParam) {
+        const parts = focusParam.split(",").map(Number);
+        const [x0, y0, x1, y1] = parts;
+        const valid = parts.length === 4 && parts.every((v) => Number.isFinite(v) && v >= 0 && v <= 1) && x0 < x1 && y0 < y1;
+        if (valid) focusRegion = { x0, y0, x1, y1 };
+      }
+      applyRenderModeVisibility();
     }
   }
 
