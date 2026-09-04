@@ -61,6 +61,11 @@
           </select>
         </div>
 
+        <div class="field checkrow" id="suppressBackgroundField">
+          <input type="checkbox" id="suppressBackground">
+          <label for="suppressBackground">Suppress background <span class="val" id="suppressBackgroundStatus">on-device AI, adds a few seconds</span></label>
+        </div>
+
         <div class="field">
           <label for="brightness">Brightness <span class="val" id="brightnessVal">0</span></label>
           <input type="range" id="brightness" min="-100" max="100" value="0">
@@ -155,6 +160,7 @@
   </div>
 
   <script src="dither.js"></script>
+  <script src="saliency.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

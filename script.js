@@ -53,6 +53,7 @@
   let brightness = 0;
   let blackPoint = 0;
   let whitePoint = 255;
+  let suppressBackground = false;
   let image = null;
   let ascii = "";
   let lastSuggestions = null;
@@ -62,6 +63,39 @@
   // moment an image is uploaded. Only suppresses the very next load -
   // later uploads in the same session get auto-suggested normally.
   let suppressNextAutoSuggest = false;
+
+  // Bumped whenever the image changes (a new upload or Clear image) so an
+  // in-flight subject-detection request (see requestSubjectMask) that
+  // resolves after the image it was computed for is gone can tell it's
+  // stale and discard itself instead of touching a now-unrelated image.
+  let imageGeneration = 0;
+
+  // Render-time subject masking (the "Suppress background" checkbox): an
+  // on-device vision model (see saliency.js) finds the photo's subject, and
+  // background-masked cells are blanked in the braille/ASCII/edges render
+  // loops (see isBackgroundPixel below) regardless of what other settings
+  // are in effect. JOURNEY.md has the full story on why this - not feeding
+  // the mask into the auto-suggest heuristic's stats - is the version that
+  // actually fixes a busy background showing up in the output: stats only
+  // pick a number for the whole frame, they can't remove anything from it.
+  let subjectMask = null;
+  let subjectMaskWidth = 0;
+  let subjectMaskHeight = 0;
+  // True while a detectForegroundMask() call is in flight, so toggling the
+  // checkbox off and back on before it resolves doesn't fire a second
+  // (redundant, several-second) request.
+  let subjectMaskPending = false;
+
+  // True if (x, y) in a width x height render buffer falls on a background
+  // pixel per the current subjectMask - false (never suppress) when no mask
+  // is set, so this is always safe to call unconditionally in the render
+  // loops below.
+  function isBackgroundPixel(x, y, width, height) {
+    if (!subjectMask) return false;
+    const mx = Math.min(subjectMaskWidth - 1, Math.floor((x / width) * subjectMaskWidth));
+    const my = Math.min(subjectMaskHeight - 1, Math.floor((y / height) * subjectMaskHeight));
+    return !subjectMask[my * subjectMaskWidth + mx];
+  }
 
   // Mirrors the initial values above, so "Reset settings" can restore them
   // without touching the loaded image. Preview size isn't included - like
@@ -78,6 +112,7 @@
     blackPoint: 0,
     whitePoint: 255,
     palette: asciiRamp,
+    suppressBackground: false,
   };
 
   const canvas = document.createElement("canvas");
@@ -108,6 +143,8 @@
   const fontSizeInput = $("#fontSize");
   const fontSizeVal = $("#fontSizeVal");
   const invertInput = $("#invert");
+  const suppressBackgroundInput = $("#suppressBackground");
+  const suppressBackgroundStatus = $("#suppressBackgroundStatus");
   const resetBtn = $("#resetBtn");
   const output = $("#output");
   const emptyState = $("#emptyState");
@@ -144,6 +181,8 @@
 
   function loadFile(file) {
     if (!file) return;
+    imageGeneration++;
+    subjectMask = null;
     loadError.style.display = "none";
     imageInfo.textContent = `${file.name} · ${formatBytes(file.size)} · ${file.type || "unknown type"}`;
     image = document.createElement("img");
@@ -155,6 +194,7 @@
       } else {
         runAutoSuggest();
       }
+      if (suppressBackground) requestSubjectMask();
     };
     // file.type isn't a reliable gate (it can be empty for legitimate images
     // from some sources), so actual decode success/failure is the real
@@ -168,6 +208,10 @@
   }
 
   clearBtn.addEventListener("click", function () {
+    imageGeneration++;
+    subjectMask = null;
+    subjectMaskPending = false;
+    resetSuppressBackgroundStatus();
     image = null;
     ascii = "";
     filepicker.value = "";
@@ -362,6 +406,25 @@
     render();
   });
 
+  suppressBackgroundInput.addEventListener("change", function () {
+    suppressBackground = this.checked;
+    updateUrl();
+    if (!suppressBackground) {
+      subjectMask = null;
+      resetSuppressBackgroundStatus();
+      render();
+      return;
+    }
+    // Already have (or are already fetching) a mask for the current image -
+    // e.g. the box was unchecked and re-checked without a new upload -
+    // nothing to redo, just make sure the render reflects it once ready.
+    if (subjectMask || subjectMaskPending) {
+      render();
+      return;
+    }
+    requestSubjectMask();
+  });
+
   // Restores every adjustment to its default, keeping the loaded image (if
   // any) in place, so a heavily-tweaked image can be started over cleanly
   // without re-uploading it.
@@ -403,6 +466,11 @@
 
     invert = DEFAULTS.invert;
     invertInput.checked = invert;
+
+    suppressBackground = DEFAULTS.suppressBackground;
+    suppressBackgroundInput.checked = suppressBackground;
+    subjectMask = null;
+    resetSuppressBackgroundStatus();
 
     updateUrl();
     if (image) {
@@ -616,7 +684,11 @@
     for (let y = 0; y < canvas.height; y += asciiYDots) {
       const line = [];
       for (let x = 0; x < canvas.width; x += asciiXDots) {
-        line.push(packBrailleCell(dithered.data, x, y, canvas.width, targetValue));
+        line.push(
+          isBackgroundPixel(x, y, canvas.width, canvas.height)
+            ? 0x2800 // blank braille cell (no dots)
+            : packBrailleCell(dithered.data, x, y, canvas.width, targetValue)
+        );
       }
       lines.push(String.fromCharCode.apply(String, line));
     }
@@ -662,7 +734,7 @@
     for (let y = 0; y < height; y++) {
       let line = "";
       for (let x = 0; x < width; x++) {
-        line += luminanceToChar(data[rgbaOffset(x, y, width)], ramp, invert);
+        line += isBackgroundPixel(x, y, width, height) ? " " : luminanceToChar(data[rgbaOffset(x, y, width)], ramp, invert);
       }
       lines.push(line);
     }
@@ -682,6 +754,10 @@
     for (let y = 0; y < height; y++) {
       let line = "";
       for (let x = 0; x < width; x++) {
+        if (isBackgroundPixel(x, y, width, height)) {
+          line += " ";
+          continue;
+        }
         const { dx, dy } = sobelGradient(data, x, y, width, height);
         line += edgeChar(dx, dy, threshold);
       }
@@ -717,8 +793,12 @@
   // because the width slider was touched earlier.
   const statsWorkWidth = 120;
 
+  function statsWorkHeightFor(image) {
+    return Math.max(1, Math.round(statsWorkWidth * (image.height / image.width)));
+  }
+
   function computeStatsForImage() {
-    const height = Math.max(1, Math.round(statsWorkWidth * (image.height / image.width)));
+    const height = statsWorkHeightFor(image);
     canvas.width = statsWorkWidth;
     canvas.height = height;
 
@@ -810,7 +890,10 @@
   // live so there's a sensible starting point without any clicking. This
   // is a heuristic based on image statistics, not real scene
   // understanding - a reasonable starting point, not a guaranteed-best
-  // artistic choice.
+  // artistic choice. Deliberately has nothing to do with the "Suppress
+  // background" model (see requestSubjectMask) - JOURNEY.md covers why
+  // feeding that mask into these stats seemed like the same idea but
+  // didn't actually fix anything.
   function runAutoSuggest() {
     if (!image) return;
     const stats = computeStatsForImage();
@@ -832,6 +915,70 @@
 
     highlightSuggestion(bestMode);
     suggestField.style.display = "";
+  }
+
+  const defaultSuppressBackgroundStatus = suppressBackgroundStatus.textContent;
+
+  function resetSuppressBackgroundStatus() {
+    suppressBackgroundStatus.textContent = defaultSuppressBackgroundStatus;
+  }
+
+  // The model's own output resolution - requesting a mask coarser than this
+  // loses nothing, and requesting one finer than this just upsamples the
+  // model's own output, so this is the natural resolution ceiling regardless
+  // of how wide the actual render ends up being.
+  const maxMaskDimension = 320;
+
+  // Aspect-correct mask dimensions for `img`, capped at maxMaskDimension on
+  // the longer side. A render wider than this (e.g. a large custom Width)
+  // will show a visibly blockier subject/background boundary than the rest
+  // of the render - an inherent limit of a 320x320 segmentation model, not
+  // a bug to chase.
+  function maskDimensionsFor(img) {
+    const aspect = img.naturalHeight / img.naturalWidth;
+    if (aspect <= 1) {
+      const width = maxMaskDimension;
+      return { width, height: Math.max(1, Math.round(width * aspect)) };
+    }
+    const height = maxMaskDimension;
+    return { width: Math.max(1, Math.round(height / aspect)), height };
+  }
+
+  // Kicks off the on-device subject-detection model (see saliency.js) for
+  // the current image and, once it resolves, stores the mask for render-
+  // time background suppression (see isBackgroundPixel/subjectMask) and
+  // re-renders - independent of whatever render mode/settings are active,
+  // since this only ever removes pixels from a render already chosen, never
+  // changes what settings get chosen. If the model is unavailable (file://,
+  // offline, blocked) or the image changes/clears before it resolves, this
+  // leaves the render exactly as it already was.
+  function requestSubjectMask() {
+    if (!window.AsciifySaliency || !image) return;
+    const generation = imageGeneration;
+    const { width, height } = maskDimensionsFor(image);
+    subjectMaskPending = true;
+    suppressBackgroundStatus.textContent = "detecting subject…";
+
+    window.AsciifySaliency
+      .detectForegroundMask(image, image.naturalWidth, image.naturalHeight, width, height)
+      .then((mask) => {
+        if (generation !== imageGeneration) return; // image changed/cleared meanwhile
+        subjectMaskPending = false;
+        // The checkbox may have been unchecked while this was in flight -
+        // don't silently turn suppression back on against that.
+        if (!suppressBackground) return;
+        if (!mask) {
+          suppressBackgroundStatus.textContent = "unavailable - showing the full frame";
+          return;
+        }
+
+        subjectMask = mask;
+        subjectMaskWidth = width;
+        subjectMaskHeight = height;
+        resetSuppressBackgroundStatus();
+        render();
+        srStatus.textContent = "Background suppressed using on-device subject detection.";
+      });
   }
 
   Object.entries(suggestionButtons).forEach(([mode, btn]) => {
@@ -865,6 +1012,7 @@
     if (blackPoint !== 0) params.set("black", blackPoint);
     if (whitePoint !== 255) params.set("white", whitePoint);
     if (invert) params.set("invert", "1");
+    if (suppressBackground) params.set("suppress", "1");
 
     const query = params.toString();
     history.replaceState(null, "", query ? `?${query}` : location.pathname);
@@ -958,6 +1106,11 @@
     if (params.get("invert") === "1") {
       invert = true;
       invertInput.checked = true;
+    }
+
+    if (params.get("suppress") === "1") {
+      suppressBackground = true;
+      suppressBackgroundInput.checked = true;
     }
   }
 

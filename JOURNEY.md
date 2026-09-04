@@ -290,6 +290,122 @@ documented failure modes above. That's a call for the next round with
 the numbers in hand, not one to make silently while chasing the
 technical answer.
 
+**Building it, and a negative result.** Given the go-ahead, vendored
+`onnxruntime-web` + `u2netp.onnx` into the repo, extended
+`computeImageStats()` in `dither.js` to take an optional per-pixel mask
+(pixels outside it are excluded from the histogram, edge-density sum, and
+the 6×6 concentration grid — with a fallback to the whole frame if the
+mask selects nothing, so a failed segmentation can't produce a zero-pixel
+divide-by-zero), and added `saliency.js` to run the model and hand back a
+mask. Two real bugs turned up before it even ran correctly: `ort.min.js`
+resolves its WASM loader's `.mjs` companion via a dynamic `import()`
+(needs a real relative specifier — a bare `"vendor/..."` path is rejected
+outright, unlike `fetch()`) while it resolves the `.wasm` binary itself
+via `fetch()` from inside that `.mjs` (relative to the *document*, not the
+script) — two paths, in the same directory, needing different bases. Only
+caught because a manual Playwright pass actually read the console output
+instead of trusting a silent catch block.
+
+Once it ran, ran it against the actual three documented failure photos
+(not synthetic cases) and looked at the rendered output, not just the
+chosen mode:
+
+- **`bright image.png` (tricycle vs. bare trees)** — refined stats flipped
+  it to edges mode. The render is edge noise across the *entire* frame,
+  trees included — not fixed.
+- **`busy clutter desk.png`** — the exact case PR #20's concentration
+  metric was built to keep out of edges mode. Refined stats flipped it to
+  edges anyway. Also not fixed — actively regressed back to the bug #20
+  had already closed.
+- **`low contrast photo dog.png`** — refined black/white points (141/206
+  vs. the whole-frame 120/255) pushed the render into a dense, saturated
+  block of `@`/`#` characters — arguably a different bad result, not
+  obviously better than the over-stretch it was meant to replace.
+
+The reason, once the renders made it obvious: **the mask only ever fed
+`computeImageStats()`** — it biases which mode/threshold/levels get
+*chosen*, but nothing about rendering itself is mask-aware. Braille/ASCII/
+edges mode all still process every pixel in the frame regardless of what
+the mask found. So even a perfectly accurate subject mask can only ever
+pick a *better-calibrated threshold for the whole image* — it can't stop
+a busy background from being part of "the whole image" once that
+threshold is applied. Threshold tuning was never going to fix "background
+clutter shows up in the render" because the render was never subject-
+aware to begin with; only the number-picking was. Fixing this for real
+would mean the mask actually suppressing/fading background pixels at
+render time — a materially bigger, more visible change to what this tool
+outputs, not a refinement to what settings it picks.
+
+Left this branch of work uncommitted rather than opening a PR for it:
+it's built, it's wired up, the tests are real (a route-blocked default
+page keeps the existing suite fast — see below — plus one dedicated
+unblocked-page test that runs the actual model), but it does not
+demonstrably fix what it was built to fix, and shipping it risked
+presenting a regression as a feature. Recording the negative result here
+instead, since it's the more valuable thing to not lose.
+
+One more concrete cost, found while getting the test suite green: the
+model runs on every auto-suggest call by default, which means every
+existing test that uploads an image now pays ~2-6s for a background
+model call it isn't testing. Fixed by having the shared test setup block
+`vendor/` requests by default (a real stand-in for the `file://`/offline/
+blocked-CDN fallback path, exercised for free by nearly the whole suite)
+and giving the one test that needs the real model its own unblocked page
+— but it's a real tax on iteration speed that a whole-frame heuristic
+never had, independent of whether the mask-based approach even works.
+
+**Second attempt: mask the render, not the stats — and it works.** Asked
+"does it work if we set the busy-clutter regression aside" and went
+looking at the other cases with real before/after screenshots instead of
+trusting the mode/threshold numbers. It didn't hold up there either — the
+airspeeder's *original* whole-frame braille render was already clean, and
+the "refined" edges version was busier, not better. That ruled out
+"tune the stats differently" as a fix and pointed straight at the actual
+structural problem named in the previous entry: apply the mask to
+*rendering itself*. Background-masked cells are now blanked directly in
+the braille/ASCII/edges render loops (`isBackgroundPixel` in `script.js`),
+using whatever settings are already in effect — completely decoupled from
+auto-suggest, so this doesn't touch `computeImageStats()` or `dither.js`
+at all (both reverted to their pre-experiment state).
+
+Validated against 6 real photos, forcing edges mode with a properly
+calibrated threshold for a fair comparison:
+
+- **Fixed**: `bright image.png` (tricycle vs. bare trees) and
+  `busy clutter desk.png` — both went from noise across the entire frame
+  to a clean, isolated subject silhouette. `car black and white.png` saw
+  the same kind of improvement in a mode auto-suggest already picked
+  correctly.
+- **No regression**: `high contrast tiger.png`, `star wars at-pt.png`,
+  `star wars airspeeder.png` — already-good renders stayed essentially
+  identical (a few stray marks cleaned up, no lost detail).
+
+**Shipping it as an opt-in checkbox, not an automatic behavior.** Unlike
+auto-suggest (instant, always on), this now has a real, unavoidable cost —
+~2-6s and a model that needs `http(s)` — so it ships behind an unchecked-
+by-default "Suppress background" checkbox rather than running
+automatically on every upload the way the (abandoned) stats-refinement
+version did. Concretely:
+
+- `index.html` no longer loads `onnxruntime-web` in a static `<script>`
+  tag; `saliency.js` injects it dynamically on first actual use
+  (`loadOrt()`). A visitor who never checks the box pays nothing — not
+  even the ~350KB runtime script, let alone the 13MB WASM binary or the
+  4.4MB model. Caught this by writing a test that asserts zero `vendor/`
+  requests fire with the box unchecked, which failed the first time
+  because the old static `<script src="vendor/onnxruntime-web/ort.min.js">`
+  tag loaded unconditionally on every page view regardless of the
+  checkbox — "off" wasn't actually off yet.
+- Mask resolution is capped at 320px on the image's longer side (the
+  model's own native resolution — asking for more just upsamples what
+  it already produced), computed fresh per image rather than the
+  prototype's fixed 240px constant.
+- The mask is cached per image: unchecking and rechecking the box without
+  a new upload reuses it instantly instead of re-running inference.
+- Included in the settings permalink (`?suppress=1`), like Invert — a
+  shared link's job is reproducing a specific look, and this is now part
+  of the look.
+
 ## Patterns worth remembering
 
 - **Every real bug this project has shipped was found by actually looking
@@ -321,3 +437,26 @@ technical answer.
   ~2-6 seconds of inference time, it was the 13 MB WASM runtime binary
   sitting underneath a 4.4 MB model. Don't let "answer the literal
   question" crowd out "surface what the investigation actually found."
+- **Feeding a better signal into the decision isn't the same as fixing
+  the output.** The saliency mask made `computeImageStats()` smarter, but
+  the renderer never became mask-aware — so "pick a better-calibrated
+  number for the whole frame" could never fix "a busy background shows up
+  in the whole frame." A cleaner input to a heuristic doesn't help if the
+  heuristic's output is spent somewhere the input's benefit can't reach.
+  Building it and looking at the real output on the real failure cases
+  is what caught this, not code review of the diff.
+- **When a fix doesn't work, ask what's structurally different about the
+  next attempt before retrying the same shape.** The first vision-model
+  attempt and the one that actually worked used the exact same mask and
+  the exact same model call — the only change was *where* the mask got
+  applied (a settings heuristic vs. the render loop itself). Isolating
+  that one variable, and testing it in isolation before combining it with
+  anything else, is what made the second result trustworthy instead of
+  just a different roll of the dice.
+- **"Off by default" needs a test, not just a checkbox.** Wiring an
+  unchecked checkbox felt sufficient until a test that actually watched
+  network requests caught `ort.min.js` loading unconditionally anyway
+  from a static `<script>` tag left over from the earlier auto-triggered
+  design. Intent (a default value) and behavior (what actually fires)
+  are different claims — only one of them was checked before the test
+  existed.
