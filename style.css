@@ -279,12 +279,38 @@ input[type="range"] {
 }
 .checkrow input { accent-color: var(--accent); width: 16px; height: 16px; }
 .checkrow label {
+  /* Overrides .field label's flex/space-between layout, which is meant for
+     a short label plus a right-aligned numeric .val (e.g. "Brightness 0")
+     and garbles wrapping when the label text and .val span are both long
+     enough to need it - the two ends kept splitting mid-word instead of
+     flowing as one block of text. */
+  display: block;
+  flex: 1;
   margin: 0;
   text-transform: none;
   font-size: 0.9rem;
   color: var(--ink);
   font-weight: 400;
   letter-spacing: 0;
+}
+.infoIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: help;
+  flex-shrink: 0;
+}
+.infoIcon:hover,
+.infoIcon:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .output-panel {
