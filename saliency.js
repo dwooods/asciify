@@ -1,24 +1,29 @@
 // On-device subject detection: an optional, best-effort enhancement layer
 // that runs a small salient-object-detection model (U²-Netp, see
 // vendor/README.md) to find which pixels of an uploaded photo are the
-// actual subject, so script.js can ask dither.js's computeImageStats() for
-// stats about the subject instead of the whole frame (background clutter,
-// framing, negative space) - see JOURNEY.md for why: three separate
-// auto-suggest heuristic bugs all traced back to global stats not knowing
-// what the subject was.
+// actual subject, so script.js's "Suppress background" feature can blank
+// out everything else at render time. See JOURNEY.md for the full story,
+// including an earlier attempt that fed this same mask into the
+// auto-suggest heuristic's stats instead of into rendering - it didn't
+// fix anything, because picking a better-calibrated number for the whole
+// frame can't stop a busy background from still being part of that frame.
 //
 // This is a progressive enhancement, not a dependency: model loading
 // requires fetch(), which fails under file:// and when offline/blocked, so
 // every public function here resolves to null on any failure instead of
-// throwing - callers fall back to today's whole-frame heuristic exactly as
-// if this file didn't exist. Depends on onnxruntime-web's `ort` global
-// (vendor/onnxruntime-web/ort.min.js, loaded before this file) and DOM/
-// canvas, so - like script.js, and unlike dither.js - this isn't unit
+// throwing - callers fall back to rendering the whole frame, exactly as if
+// this file didn't exist. Nothing here loads until the feature is actually
+// used (see loadOrt below): `index.html` does not put onnxruntime-web in a
+// static <script> tag, specifically so a visitor who never checks
+// "Suppress background" never pays for it - not even the ~350KB runtime
+// script, let alone the 13MB WASM binary or the 4.4MB model. Depends on
+// DOM/canvas, so - like script.js, and unlike dither.js - this isn't unit
 // tested under Node; it's covered by the Playwright suite in
 // tests/ui.test.js instead.
 (function (global) {
   "use strict";
 
+  const ORT_SCRIPT_URL = "./vendor/onnxruntime-web/ort.min.js";
   // Leading "./" matters, not just style: this is loaded via a dynamic
   // import() internally, and a bare "vendor/..." path (no leading "./",
   // "../", or scheme) is an invalid/bare module specifier that browsers
@@ -34,14 +39,33 @@
   const MASK_THRESHOLD = 128;
 
   let sessionPromise = null;
+  let ortScriptPromise = null;
 
-  function getOrt() {
-    return typeof global.ort !== "undefined" ? global.ort : null;
+  // Injects ort.min.js on first use only, so the plain converter never pays
+  // for this feature's runtime until something actually asks for a mask.
+  // Cached so repeated calls (one per image, if the checkbox stays checked)
+  // don't inject the script more than once; a failed load isn't cached, so
+  // a transient failure doesn't permanently disable the feature for the
+  // rest of the page's lifetime (matches getSession()'s same policy below).
+  function loadOrt() {
+    if (typeof global.ort !== "undefined") return Promise.resolve(global.ort);
+    if (!ortScriptPromise) {
+      ortScriptPromise = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = ORT_SCRIPT_URL;
+        script.onload = () => (typeof global.ort !== "undefined" ? resolve(global.ort) : reject(new Error("ort.min.js loaded but did not define window.ort")));
+        script.onerror = () => reject(new Error("Failed to load " + ORT_SCRIPT_URL));
+        document.head.appendChild(script);
+      }).catch((err) => {
+        ortScriptPromise = null;
+        throw err;
+      });
+    }
+    return ortScriptPromise;
   }
 
-  function createSession() {
-    const ort = getOrt();
-    if (!ort) return Promise.reject(new Error("onnxruntime-web is not loaded"));
+  async function createSession() {
+    const ort = await loadOrt();
     // Threaded WASM needs cross-origin-isolation headers (COOP/COEP) that a
     // plain static file server - the only kind this project requires - won't
     // set, so pin to a single thread rather than let it try and fail.
@@ -148,7 +172,8 @@
 
   // Resamples a greyscale mask canvas down to targetWidth x targetHeight and
   // thresholds it into a one-byte-per-pixel 0/1 mask aligned with a
-  // computeImageStats()-style pixel buffer at that resolution.
+  // targetWidth x targetHeight render buffer (row-major, one byte per
+  // pixel - see isBackgroundPixel in script.js).
   function maskCanvasToBuffer(maskCanvas, targetWidth, targetHeight) {
     const canvas = document.createElement("canvas");
     canvas.width = targetWidth;
@@ -167,12 +192,12 @@
   // Runs subject detection on `source` (anything drawImage() accepts - this
   // project always passes the loaded HTMLImageElement) and returns a
   // Promise for a Uint8Array mask (1 = subject, 0 = background) sized
-  // targetWidth x targetHeight, i.e. ready to pass straight into
-  // AsciifyDither.computeImageStats(). Resolves to null - never rejects -
-  // on any failure: model/network unavailable (file://, offline, blocked),
-  // an unsupported browser, or anything else going wrong. Errors are logged
-  // once for debugging, not surfaced to the user - this is a silent
-  // best-effort refinement, not a feature the app depends on.
+  // targetWidth x targetHeight, i.e. ready to index with the same (x, y) a
+  // render loop at that resolution already uses. Resolves to null - never
+  // rejects - on any failure: model/network unavailable (file://, offline,
+  // blocked), an unsupported browser, or anything else going wrong. Errors
+  // are logged once for debugging, not surfaced to the user - this is a
+  // silent best-effort enhancement, not a feature the app depends on.
   async function detectForegroundMask(source, sourceWidth, sourceHeight, targetWidth, targetHeight) {
     try {
       const session = await getSession();
@@ -185,7 +210,7 @@
       const maskCanvas = outputToMaskCanvas(output.data, INPUT_SIZE, INPUT_SIZE);
       return maskCanvasToBuffer(maskCanvas, targetWidth, targetHeight);
     } catch (err) {
-      console.warn("Asciify: on-device subject detection unavailable, using whole-frame stats instead.", err);
+      console.warn("Asciify: on-device subject detection unavailable, rendering the whole frame instead.", err);
       return null;
     }
   }

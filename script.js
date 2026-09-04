@@ -53,6 +53,7 @@
   let brightness = 0;
   let blackPoint = 0;
   let whitePoint = 255;
+  let suppressBackground = false;
   let image = null;
   let ascii = "";
   let lastSuggestions = null;
@@ -63,23 +64,27 @@
   // later uploads in the same session get auto-suggested normally.
   let suppressNextAutoSuggest = false;
 
-  // Bumped whenever the image changes (a new upload or Clear image) so a
-  // saliency refinement (see refineAutoSuggestWithSaliency) that resolves
-  // after the image it was computed for is gone can tell it's stale and
-  // discard itself instead of touching a now-unrelated (or absent) image.
-  let autoSuggestGeneration = 0;
+  // Bumped whenever the image changes (a new upload or Clear image) so an
+  // in-flight subject-detection request (see requestSubjectMask) that
+  // resolves after the image it was computed for is gone can tell it's
+  // stale and discard itself instead of touching a now-unrelated image.
+  let imageGeneration = 0;
 
-  // PROTOTYPE (not proposed for merge as-is): render-time subject masking.
-  // Unlike the mask-fed-into-stats experiment (see JOURNEY.md - it didn't
-  // fix anything because rendering itself was never mask-aware), this
-  // applies the mask directly to what gets drawn: background cells are
-  // blanked at render time regardless of what settings are in effect.
-  // Deliberately kept independent of auto-suggest's chosen settings, so
-  // this test isolates "does masking the render help" from "does masking
-  // the stats help" (already answered: no).
+  // Render-time subject masking (the "Suppress background" checkbox): an
+  // on-device vision model (see saliency.js) finds the photo's subject, and
+  // background-masked cells are blanked in the braille/ASCII/edges render
+  // loops (see isBackgroundPixel below) regardless of what other settings
+  // are in effect. JOURNEY.md has the full story on why this - not feeding
+  // the mask into the auto-suggest heuristic's stats - is the version that
+  // actually fixes a busy background showing up in the output: stats only
+  // pick a number for the whole frame, they can't remove anything from it.
   let subjectMask = null;
   let subjectMaskWidth = 0;
   let subjectMaskHeight = 0;
+  // True while a detectForegroundMask() call is in flight, so toggling the
+  // checkbox off and back on before it resolves doesn't fire a second
+  // (redundant, several-second) request.
+  let subjectMaskPending = false;
 
   // True if (x, y) in a width x height render buffer falls on a background
   // pixel per the current subjectMask - false (never suppress) when no mask
@@ -107,6 +112,7 @@
     blackPoint: 0,
     whitePoint: 255,
     palette: asciiRamp,
+    suppressBackground: false,
   };
 
   const canvas = document.createElement("canvas");
@@ -137,6 +143,8 @@
   const fontSizeInput = $("#fontSize");
   const fontSizeVal = $("#fontSizeVal");
   const invertInput = $("#invert");
+  const suppressBackgroundInput = $("#suppressBackground");
+  const suppressBackgroundStatus = $("#suppressBackgroundStatus");
   const resetBtn = $("#resetBtn");
   const output = $("#output");
   const emptyState = $("#emptyState");
@@ -154,7 +162,6 @@
   const loadError = $("#loadError");
   const srStatus = $("#srStatus");
   const suggestField = $("#suggestField");
-  const suggestRefining = $("#suggestRefining");
   const suggestionButtons = { braille: $("#suggestBraille"), ascii: $("#suggestAscii"), edges: $("#suggestEdges") };
   const suggestionPreviewEls = { braille: $("#suggestBraillePreview"), ascii: $("#suggestAsciiPreview"), edges: $("#suggestEdgesPreview") };
 
@@ -174,7 +181,7 @@
 
   function loadFile(file) {
     if (!file) return;
-    autoSuggestGeneration++;
+    imageGeneration++;
     subjectMask = null;
     loadError.style.display = "none";
     imageInfo.textContent = `${file.name} · ${formatBytes(file.size)} · ${file.type || "unknown type"}`;
@@ -187,6 +194,7 @@
       } else {
         runAutoSuggest();
       }
+      if (suppressBackground) requestSubjectMask();
     };
     // file.type isn't a reliable gate (it can be empty for legitimate images
     // from some sources), so actual decode success/failure is the real
@@ -200,8 +208,10 @@
   }
 
   clearBtn.addEventListener("click", function () {
-    autoSuggestGeneration++;
+    imageGeneration++;
     subjectMask = null;
+    subjectMaskPending = false;
+    resetSuppressBackgroundStatus();
     image = null;
     ascii = "";
     filepicker.value = "";
@@ -216,7 +226,6 @@
     emptyState.style.display = "flex";
     srStatus.textContent = "Image cleared.";
     suggestField.style.display = "none";
-    suggestRefining.style.display = "none";
     lastSuggestions = null;
   });
 
@@ -397,6 +406,25 @@
     render();
   });
 
+  suppressBackgroundInput.addEventListener("change", function () {
+    suppressBackground = this.checked;
+    updateUrl();
+    if (!suppressBackground) {
+      subjectMask = null;
+      resetSuppressBackgroundStatus();
+      render();
+      return;
+    }
+    // Already have (or are already fetching) a mask for the current image -
+    // e.g. the box was unchecked and re-checked without a new upload -
+    // nothing to redo, just make sure the render reflects it once ready.
+    if (subjectMask || subjectMaskPending) {
+      render();
+      return;
+    }
+    requestSubjectMask();
+  });
+
   // Restores every adjustment to its default, keeping the loaded image (if
   // any) in place, so a heavily-tweaked image can be started over cleanly
   // without re-uploading it.
@@ -438,6 +466,11 @@
 
     invert = DEFAULTS.invert;
     invertInput.checked = invert;
+
+    suppressBackground = DEFAULTS.suppressBackground;
+    suppressBackgroundInput.checked = suppressBackground;
+    subjectMask = null;
+    resetSuppressBackgroundStatus();
 
     updateUrl();
     if (image) {
@@ -764,9 +797,7 @@
     return Math.max(1, Math.round(statsWorkWidth * (image.height / image.width)));
   }
 
-  // mask, when given, restricts the stats to a detected subject rather than
-  // the whole frame - see refineAutoSuggestWithSaliency.
-  function computeStatsForImage(mask) {
+  function computeStatsForImage() {
     const height = statsWorkHeightFor(image);
     canvas.width = statsWorkWidth;
     canvas.height = height;
@@ -779,7 +810,7 @@
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-    return computeImageStats(imageData.data, canvas.width, canvas.height, mask);
+    return computeImageStats(imageData.data, canvas.width, canvas.height);
   }
 
   // A small width for the suggestion thumbnails - just enough to be
@@ -853,11 +884,19 @@
     Object.entries(suggestionButtons).forEach(([key, btn]) => btn.classList.toggle("selected", key === mode));
   }
 
-  // Computes and applies a full settings suggestion (all three modes
-  // previewed, the best one applied live) from whatever stats it's given -
-  // shared by the instant whole-frame pass in runAutoSuggest and the
-  // deferred subject-only pass in refineAutoSuggestWithSaliency.
-  function applyStatsAsSuggestions(stats) {
+  // Runs on every fresh image load: measures the image's own stats and
+  // suggests a full settings preset for all three render modes, previews
+  // each as a small thumbnail, and applies the single best-guess mode
+  // live so there's a sensible starting point without any clicking. This
+  // is a heuristic based on image statistics, not real scene
+  // understanding - a reasonable starting point, not a guaranteed-best
+  // artistic choice. Deliberately has nothing to do with the "Suppress
+  // background" model (see requestSubjectMask) - JOURNEY.md covers why
+  // feeding that mask into these stats seemed like the same idea but
+  // didn't actually fix anything.
+  function runAutoSuggest() {
+    if (!image) return;
+    const stats = computeStatsForImage();
     const bestMode = suggestRenderMode(stats);
     const suggestions = {
       braille: suggestSettingsForMode("braille", stats),
@@ -876,75 +915,70 @@
 
     highlightSuggestion(bestMode);
     suggestField.style.display = "";
-    return { bestMode, suggestions };
   }
 
-  // True if the live settings still exactly match a previously-applied
-  // suggestion - i.e. nothing (the user, a permalink restore, Reset
-  // settings) has changed them since. Guards refineAutoSuggestWithSaliency:
-  // a background refinement should never clobber a choice made after it
-  // started.
-  function currentSettingsMatchSuggestion(settings) {
-    if (renderMode !== settings.renderMode) return false;
-    if (settings.dithererName !== undefined && dithererName !== settings.dithererName) return false;
-    if (settings.threshold !== undefined && threshold !== settings.threshold) return false;
-    if (settings.charsetKey !== undefined && paletteInput.value !== charsetPresets[settings.charsetKey]) return false;
-    if (blackPoint !== settings.blackPoint) return false;
-    if (whitePoint !== settings.whitePoint) return false;
-    return true;
+  const defaultSuppressBackgroundStatus = suppressBackgroundStatus.textContent;
+
+  function resetSuppressBackgroundStatus() {
+    suppressBackgroundStatus.textContent = defaultSuppressBackgroundStatus;
   }
 
-  // PROTOTYPE (see subjectMask above): a higher-resolution mask than the
-  // 120px-wide one computeStatsForImage() uses, so render-time background
-  // suppression isn't blockier than it has to be.
-  const renderMaskWidth = 240;
+  // The model's own output resolution - requesting a mask coarser than this
+  // loses nothing, and requesting one finer than this just upsamples the
+  // model's own output, so this is the natural resolution ceiling regardless
+  // of how wide the actual render ends up being.
+  const maxMaskDimension = 320;
 
-  // Kicks off the on-device subject-detection model (see saliency.js) in
-  // the background and, if it finds a subject, stores the mask for
-  // render-time background suppression (see isBackgroundPixel/subjectMask)
-  // and re-renders with the *same* settings already in effect - testing
-  // whether masking the render itself (rather than the mask-fed-into-stats
-  // approach documented in JOURNEY.md, which didn't work) actually fixes
-  // the busy-background cases. Never blocks or delays the instant
-  // whole-frame suggestion runAutoSuggest() already applied; if the model
-  // is unavailable (file://, offline, blocked) or takes too long to
-  // matter, nothing here ever runs and today's render is exactly what's
-  // left in place.
-  function refineAutoSuggestWithSaliency(appliedSettings) {
+  // Aspect-correct mask dimensions for `img`, capped at maxMaskDimension on
+  // the longer side. A render wider than this (e.g. a large custom Width)
+  // will show a visibly blockier subject/background boundary than the rest
+  // of the render - an inherent limit of a 320x320 segmentation model, not
+  // a bug to chase.
+  function maskDimensionsFor(img) {
+    const aspect = img.naturalHeight / img.naturalWidth;
+    if (aspect <= 1) {
+      const width = maxMaskDimension;
+      return { width, height: Math.max(1, Math.round(width * aspect)) };
+    }
+    const height = maxMaskDimension;
+    return { width: Math.max(1, Math.round(height / aspect)), height };
+  }
+
+  // Kicks off the on-device subject-detection model (see saliency.js) for
+  // the current image and, once it resolves, stores the mask for render-
+  // time background suppression (see isBackgroundPixel/subjectMask) and
+  // re-renders - independent of whatever render mode/settings are active,
+  // since this only ever removes pixels from a render already chosen, never
+  // changes what settings get chosen. If the model is unavailable (file://,
+  // offline, blocked) or the image changes/clears before it resolves, this
+  // leaves the render exactly as it already was.
+  function requestSubjectMask() {
     if (!window.AsciifySaliency || !image) return;
-    const generation = autoSuggestGeneration;
-    const targetHeight = Math.max(1, Math.round(renderMaskWidth * (image.height / image.width)));
-    suggestRefining.style.display = "";
+    const generation = imageGeneration;
+    const { width, height } = maskDimensionsFor(image);
+    subjectMaskPending = true;
+    suppressBackgroundStatus.textContent = "detecting subject…";
 
     window.AsciifySaliency
-      .detectForegroundMask(image, image.naturalWidth, image.naturalHeight, renderMaskWidth, targetHeight)
+      .detectForegroundMask(image, image.naturalWidth, image.naturalHeight, width, height)
       .then((mask) => {
-        if (generation !== autoSuggestGeneration) return; // image changed/cleared meanwhile
-        suggestRefining.style.display = "none";
-        if (!mask) return; // model unavailable - keep today's whole-frame render
-        if (!currentSettingsMatchSuggestion(appliedSettings)) return; // user already moved on
+        if (generation !== imageGeneration) return; // image changed/cleared meanwhile
+        subjectMaskPending = false;
+        // The checkbox may have been unchecked while this was in flight -
+        // don't silently turn suppression back on against that.
+        if (!suppressBackground) return;
+        if (!mask) {
+          suppressBackgroundStatus.textContent = "unavailable - showing the full frame";
+          return;
+        }
 
         subjectMask = mask;
-        subjectMaskWidth = renderMaskWidth;
-        subjectMaskHeight = targetHeight;
+        subjectMaskWidth = width;
+        subjectMaskHeight = height;
+        resetSuppressBackgroundStatus();
         render();
         srStatus.textContent = "Background suppressed using on-device subject detection.";
       });
-  }
-
-  // Runs on every fresh image load: measures the image's own stats and
-  // suggests a full settings preset for all three render modes, previews
-  // each as a small thumbnail, and applies the single best-guess mode
-  // live so there's a sensible starting point without any clicking. This
-  // is a heuristic based on image statistics, not real scene
-  // understanding - a reasonable starting point, not a guaranteed-best
-  // artistic choice. Immediately after, kicks off a slower, optional
-  // refinement pass that narrows the same stats to the image's detected
-  // subject - see refineAutoSuggestWithSaliency.
-  function runAutoSuggest() {
-    if (!image) return;
-    const { bestMode, suggestions } = applyStatsAsSuggestions(computeStatsForImage());
-    refineAutoSuggestWithSaliency(suggestions[bestMode]);
   }
 
   Object.entries(suggestionButtons).forEach(([mode, btn]) => {
@@ -978,6 +1012,7 @@
     if (blackPoint !== 0) params.set("black", blackPoint);
     if (whitePoint !== 255) params.set("white", whitePoint);
     if (invert) params.set("invert", "1");
+    if (suppressBackground) params.set("suppress", "1");
 
     const query = params.toString();
     history.replaceState(null, "", query ? `?${query}` : location.pathname);
@@ -1071,6 +1106,11 @@
     if (params.get("invert") === "1") {
       invert = true;
       invertInput.checked = true;
+    }
+
+    if (params.get("suppress") === "1") {
+      suppressBackground = true;
+      suppressBackgroundInput.checked = true;
     }
   }
 

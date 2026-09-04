@@ -354,6 +354,58 @@ and giving the one test that needs the real model its own unblocked page
 — but it's a real tax on iteration speed that a whole-frame heuristic
 never had, independent of whether the mask-based approach even works.
 
+**Second attempt: mask the render, not the stats — and it works.** Asked
+"does it work if we set the busy-clutter regression aside" and went
+looking at the other cases with real before/after screenshots instead of
+trusting the mode/threshold numbers. It didn't hold up there either — the
+airspeeder's *original* whole-frame braille render was already clean, and
+the "refined" edges version was busier, not better. That ruled out
+"tune the stats differently" as a fix and pointed straight at the actual
+structural problem named in the previous entry: apply the mask to
+*rendering itself*. Background-masked cells are now blanked directly in
+the braille/ASCII/edges render loops (`isBackgroundPixel` in `script.js`),
+using whatever settings are already in effect — completely decoupled from
+auto-suggest, so this doesn't touch `computeImageStats()` or `dither.js`
+at all (both reverted to their pre-experiment state).
+
+Validated against 6 real photos, forcing edges mode with a properly
+calibrated threshold for a fair comparison:
+
+- **Fixed**: `bright image.png` (tricycle vs. bare trees) and
+  `busy clutter desk.png` — both went from noise across the entire frame
+  to a clean, isolated subject silhouette. `car black and white.png` saw
+  the same kind of improvement in a mode auto-suggest already picked
+  correctly.
+- **No regression**: `high contrast tiger.png`, `star wars at-pt.png`,
+  `star wars airspeeder.png` — already-good renders stayed essentially
+  identical (a few stray marks cleaned up, no lost detail).
+
+**Shipping it as an opt-in checkbox, not an automatic behavior.** Unlike
+auto-suggest (instant, always on), this now has a real, unavoidable cost —
+~2-6s and a model that needs `http(s)` — so it ships behind an unchecked-
+by-default "Suppress background" checkbox rather than running
+automatically on every upload the way the (abandoned) stats-refinement
+version did. Concretely:
+
+- `index.html` no longer loads `onnxruntime-web` in a static `<script>`
+  tag; `saliency.js` injects it dynamically on first actual use
+  (`loadOrt()`). A visitor who never checks the box pays nothing — not
+  even the ~350KB runtime script, let alone the 13MB WASM binary or the
+  4.4MB model. Caught this by writing a test that asserts zero `vendor/`
+  requests fire with the box unchecked, which failed the first time
+  because the old static `<script src="vendor/onnxruntime-web/ort.min.js">`
+  tag loaded unconditionally on every page view regardless of the
+  checkbox — "off" wasn't actually off yet.
+- Mask resolution is capped at 320px on the image's longer side (the
+  model's own native resolution — asking for more just upsamples what
+  it already produced), computed fresh per image rather than the
+  prototype's fixed 240px constant.
+- The mask is cached per image: unchecking and rechecking the box without
+  a new upload reuses it instantly instead of re-running inference.
+- Included in the settings permalink (`?suppress=1`), like Invert — a
+  shared link's job is reproducing a specific look, and this is now part
+  of the look.
+
 ## Patterns worth remembering
 
 - **Every real bug this project has shipped was found by actually looking
@@ -393,3 +445,18 @@ never had, independent of whether the mask-based approach even works.
   heuristic's output is spent somewhere the input's benefit can't reach.
   Building it and looking at the real output on the real failure cases
   is what caught this, not code review of the diff.
+- **When a fix doesn't work, ask what's structurally different about the
+  next attempt before retrying the same shape.** The first vision-model
+  attempt and the one that actually worked used the exact same mask and
+  the exact same model call — the only change was *where* the mask got
+  applied (a settings heuristic vs. the render loop itself). Isolating
+  that one variable, and testing it in isolation before combining it with
+  anything else, is what made the second result trustworthy instead of
+  just a different roll of the dice.
+- **"Off by default" needs a test, not just a checkbox.** Wiring an
+  unchecked checkbox felt sufficient until a test that actually watched
+  network requests caught `ort.min.js` loading unconditionally anyway
+  from a static `<script>` tag left over from the earlier auto-triggered
+  design. Intent (a default value) and behavior (what actually fires)
+  are different claims — only one of them was checked before the test
+  existed.

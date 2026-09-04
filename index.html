@@ -35,7 +35,7 @@
         </div>
 
         <div class="field" id="suggestField" style="display:none;">
-          <label>Suggested settings <span class="val">tap to apply</span> <span class="val" id="suggestRefining" style="display:none;">refining with on-device subject detection…</span></label>
+          <label>Suggested settings <span class="val">tap to apply</span></label>
           <div class="suggestions">
             <button class="suggestion" id="suggestBraille" type="button">
               <pre class="suggestion-preview" id="suggestBraillePreview" aria-hidden="true"></pre>
@@ -59,6 +59,11 @@
             <option value="ascii">ASCII characters</option>
             <option value="edges">Line art (edges)</option>
           </select>
+        </div>
+
+        <div class="field checkrow" id="suppressBackgroundField">
+          <input type="checkbox" id="suppressBackground">
+          <label for="suppressBackground">Suppress background <span class="val" id="suppressBackgroundStatus">on-device AI, adds a few seconds</span></label>
         </div>
 
         <div class="field">
@@ -155,7 +160,6 @@
   </div>
 
   <script src="dither.js"></script>
-  <script src="vendor/onnxruntime-web/ort.min.js"></script>
   <script src="saliency.js"></script>
   <script src="script.js"></script>
 </body>

@@ -164,20 +164,42 @@ test("auto-suggest does not override settings restored from a permalink on the f
   assert.equal(await page.isVisible("#suggestField"), false);
 });
 
-test("auto-suggest degrades gracefully when on-device subject detection is unavailable", async () => {
-  // This test's page has vendor/ blocked by the shared beforeEach above -
-  // the same failure mode as file://, offline, or a blocked CDN. The
-  // whole-frame suggestion (and everything downstream of it) must work
-  // exactly as if saliency.js didn't exist, with no uncaught page error
-  // (asserted for every test in afterEach) and the "refining" indicator
-  // never left stuck on.
-  await loadTestImage();
-  assert.equal(await page.isVisible("#suggestField"), true);
-  await page.waitForTimeout(200); // let the rejected detectForegroundMask() settle
-  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("suggestRefining")).display), "none");
+test("Suppress background is off by default and never touches the network when left off", async () => {
+  // This is the file://-equivalent default experience: without opting in,
+  // the app should never even attempt to load the model, not just handle
+  // it failing. Uses its own unblocked page specifically so a real request
+  // would be observable - if this test saw one, the checkbox's default
+  // wouldn't actually be doing anything.
+  const freshPage = await browser.newPage();
+  const vendorRequests = [];
+  freshPage.on("request", (r) => { if (r.url().includes("/vendor/")) vendorRequests.push(r.url()); });
+  await freshPage.goto(`${baseUrl}/index.html`, { waitUntil: "domcontentloaded" });
+
+  assert.equal(await freshPage.isChecked("#suppressBackground"), false);
+  await freshPage.setInputFiles("#filepicker", testImagePath);
+  await freshPage.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await freshPage.waitForTimeout(200);
+
+  assert.deepEqual(vendorRequests, []);
+  await freshPage.close();
 });
 
-test("auto-suggest suppresses the background once on-device subject detection finishes", async () => {
+test("Suppress background degrades gracefully when on-device subject detection is unavailable", async () => {
+  // This test's page has vendor/ blocked by the shared beforeEach above -
+  // the same failure mode as file://, offline, or a blocked CDN. Checking
+  // the box must not crash or hang the output; it should say plainly that
+  // detection is unavailable rather than leaving a "detecting..." status
+  // stuck on forever.
+  await loadTestImage();
+  await page.check("#suppressBackground");
+  await page.waitForFunction(
+    () => document.getElementById("suppressBackgroundStatus").textContent !== "detecting subject…"
+  );
+  assert.match(await page.textContent("#suppressBackgroundStatus"), /unavailable/);
+  assert.equal(await page.isVisible("#output"), true);
+});
+
+test("Suppress background suppresses the render once on-device subject detection finishes", async () => {
   // Unlike every other test in this file, this one needs the real model to
   // actually load and run, so it uses its own page rather than the shared
   // one the beforeEach above deliberately blocks vendor/ on. Model load +
@@ -190,14 +212,67 @@ test("auto-suggest suppresses the background once on-device subject detection fi
   await ortPage.setInputFiles("#filepicker", testImagePath);
   await ortPage.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
 
-  await ortPage.waitForFunction(() => getComputedStyle(document.getElementById("suggestRefining")).display === "none", { timeout: 30000 });
+  const textBefore = await ortPage.evaluate(() => document.getElementById("output").innerText);
+
+  await ortPage.check("#suppressBackground");
+  await ortPage.waitForFunction(
+    () => document.getElementById("suppressBackgroundStatus").textContent === "on-device AI, adds a few seconds",
+    { timeout: 30000 }
+  );
   assert.equal(
     await ortPage.textContent("#srStatus"),
     "Background suppressed using on-device subject detection."
   );
 
+  const textAfter = await ortPage.evaluate(() => document.getElementById("output").innerText);
+  assert.notEqual(textAfter, textBefore, "expected suppressing the background to change the rendered output");
+
+  // Unchecking restores the original, un-suppressed render.
+  await ortPage.uncheck("#suppressBackground");
+  await ortPage.waitForTimeout(100);
+  assert.equal(await ortPage.evaluate(() => document.getElementById("output").innerText), textBefore);
+
   assert.deepEqual(ortPageErrors, []);
   await ortPage.close();
+});
+
+test("unchecking Suppress background while detection is still in flight does not re-apply it once it resolves", async () => {
+  // Regression test: the in-flight detectForegroundMask() promise used to
+  // apply its mask unconditionally once it resolved, even if the user had
+  // already unchecked the box in the meantime - silently turning
+  // suppression back on against their explicit action.
+  //
+  // Uses a controllable mock instead of the real model so the race is
+  // deterministic rather than dependent on real inference timing - which
+  // turns out to be unreliable to race against directly: WASM init and
+  // inference block the page's main thread for stretches, which stalls
+  // Playwright's own commands too, so a fixed "wait 50ms then uncheck"
+  // can't reliably land inside the real several-second window.
+  await loadTestImage();
+  const textBefore = await page.evaluate(() => document.getElementById("output").innerText);
+
+  await page.evaluate(() => {
+    window.__resolveMask = null;
+    window.AsciifySaliency = {
+      detectForegroundMask: () => new Promise((resolve) => { window.__resolveMask = resolve; }),
+    };
+  });
+
+  await page.check("#suppressBackground");
+  await page.waitForFunction(() => typeof window.__resolveMask === "function");
+  await page.uncheck("#suppressBackground");
+
+  // Resolve the request only now, after the checkbox has already been
+  // unchecked - an all-background mask, so a wrongly-reapplied mask would
+  // blank the entire render and be unmistakable against textBefore.
+  await page.evaluate(() => window.__resolveMask(new Uint8Array(320 * 320)));
+  await page.waitForTimeout(200);
+
+  assert.equal(
+    await page.evaluate(() => document.getElementById("output").innerText),
+    textBefore,
+    "expected the render to stay un-suppressed after unchecking, even once the in-flight request resolved"
+  );
 });
 
 test("switching to ASCII mode renders using only the palette's characters", async () => {
