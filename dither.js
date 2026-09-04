@@ -310,11 +310,30 @@
     const blockStdev = Math.sqrt(blockSumSquaredDiff / blockMeans.length);
     const edgeConcentration = blockMean > 0 ? blockStdev / blockMean : 0;
 
+    // Shannon entropy of the luminance histogram, in bits - low for an
+    // image built from a handful of dominant tones (flat-shaded illustration
+    // line art: a near-white fill, a near-black outline, little in between),
+    // high for a continuous-tone photo, where sensor noise and lighting
+    // gradients spread real mass across most of the 0-255 range even in
+    // "flat" regions. See suggestRenderMode below - this is what actually
+    // separates already-line-art images from photos of a distinct subject,
+    // which edgeDensity/edgeConcentration alone cannot (a coloring-book
+    // truck's edges are exactly as concentrated on its subject as a real
+    // photo's are).
+    let entropy = 0;
+    for (let value = 0; value < 256; value++) {
+      const count = histogram[value];
+      if (count === 0) continue;
+      const p = count / total;
+      entropy -= p * Math.log2(p);
+    }
+
     return {
       mean,
       stdev,
       edgeDensity,
       edgeConcentration,
+      entropy,
       p2: histogramPercentile(histogram, 2),
       p98: histogramPercentile(histogram, 98),
     };
@@ -351,8 +370,25 @@
   //   line art (a toy AT-ST model, a tiger's face, a black-and-white car)
   //   all scored >= 0.355 on this concentration measure, while busy/
   //   cluttered scenes that rendered as noise all scored <= 0.322.
+  // - entropy >= 5.3: edgeDensity/edgeConcentration alone can't tell a real
+  //   photo's subject from an already-line-art image's outline (a
+  //   coloring-book-style illustration's edges are just as concentrated on
+  //   its subject as a real photo's are) - both suggested "edges" for a set
+  //   of coloring-book-style uploads that actually render far better in
+  //   braille (edge re-detection on input that's already near-binary line
+  //   art produces noise, not a cleaner line - see JOURNEY.md). Histogram
+  //   entropy catches what the edge measures can't: a flat-shaded
+  //   illustration builds its whole image from a handful of dominant tones
+  //   (background fill, outline, maybe one shading tone) and scores low;
+  //   a continuous-tone photo spreads real mass across most of the 0-255
+  //   range from sensor noise and lighting gradients alone, even in a
+  //   "flat" region, and scores meaningfully higher. Six coloring-book
+  //   uploads all scored <= 5.01; six real photos that genuinely render
+  //   well as line art all scored >= 5.52 - a real ~0.5 gap, not the
+  //   0.01-0.04 margins every edge-density-based signal tried before this
+  //   one produced.
   function suggestRenderMode(stats) {
-    if (stats.edgeDensity > 20 && stats.edgeConcentration > 0.33) return "edges";
+    if (stats.edgeDensity > 20 && stats.edgeConcentration > 0.33 && stats.entropy >= 5.3) return "edges";
     if (stats.edgeDensity < 15 && stats.stdev < 50) return "ascii";
     return "braille";
   }

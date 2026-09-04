@@ -307,7 +307,7 @@ test("suggestLevels clamps to the valid 0-254/1-255 slider ranges", () => {
 });
 
 test("suggestRenderMode picks edges for images with plentiful, unevenly-distributed edges", () => {
-  assert.equal(suggestRenderMode({ edgeDensity: 60, edgeConcentration: 0.5, stdev: 80 }), "edges");
+  assert.equal(suggestRenderMode({ edgeDensity: 60, edgeConcentration: 0.5, stdev: 80, entropy: 7 }), "edges");
 });
 
 test("suggestRenderMode avoids edges for busy/cluttered images despite high edge density", () => {
@@ -316,15 +316,15 @@ test("suggestRenderMode avoids edges for busy/cluttered images despite high edge
   // plain background, but the edges are spread uniformly across the whole
   // frame (low concentration) rather than outlining a recognizable shape,
   // and renders as noise rather than line art.
-  assert.equal(suggestRenderMode({ edgeDensity: 33, edgeConcentration: 0.27, stdev: 80 }), "braille");
+  assert.equal(suggestRenderMode({ edgeDensity: 33, edgeConcentration: 0.27, stdev: 80, entropy: 7 }), "braille");
 });
 
 test("suggestRenderMode picks ascii for flat, low-contrast, low-edge images", () => {
-  assert.equal(suggestRenderMode({ edgeDensity: 5, stdev: 20 }), "ascii");
+  assert.equal(suggestRenderMode({ edgeDensity: 5, stdev: 20, entropy: 7 }), "ascii");
 });
 
 test("suggestRenderMode falls back to braille for everything in between", () => {
-  assert.equal(suggestRenderMode({ edgeDensity: 20, stdev: 70 }), "braille");
+  assert.equal(suggestRenderMode({ edgeDensity: 20, stdev: 70, entropy: 7 }), "braille");
 });
 
 test("suggestRenderMode picks edges at real-photo-scale edge density, not just extreme synthetic values", () => {
@@ -333,7 +333,41 @@ test("suggestRenderMode picks edges at real-photo-scale edge density, not just e
   // a busy black-and-white photo) - edges mode was effectively
   // unreachable. 25 is roughly a tiger-face close-up's measured edge
   // density; recalibrated against real photos, this must pick edges.
-  assert.equal(suggestRenderMode({ edgeDensity: 25, edgeConcentration: 0.5, stdev: 70 }), "edges");
+  assert.equal(suggestRenderMode({ edgeDensity: 25, edgeConcentration: 0.5, stdev: 70, entropy: 7 }), "edges");
+});
+
+test("suggestRenderMode avoids edges for already-line-art images despite plentiful, concentrated edges", () => {
+  // Regression test: a coloring-book-style illustration's outline is just
+  // as concentrated on its subject as a real photo's edges are, so
+  // edgeDensity/edgeConcentration alone picked "edges" for these - but
+  // re-detecting edges on input that's already near-binary line art
+  // produces visual noise, not a cleaner line (see JOURNEY.md). Low
+  // entropy (few dominant tones: a fill, an outline, little in between) is
+  // what actually distinguishes this case; 4.6 is roughly truck.jpg's
+  // measured entropy, well inside the six coloring-book uploads that
+  // motivated this (all <= 5.01), clear of the six real photos that
+  // genuinely render well as line art (all >= 5.52).
+  assert.equal(suggestRenderMode({ edgeDensity: 31, edgeConcentration: 0.72, stdev: 65, entropy: 4.6 }), "braille");
+});
+
+test("computeImageStats reports low entropy for a two-tone image and high entropy for a full-range one", () => {
+  const twoTone = new Uint8ClampedArray(400);
+  for (let i = 0; i < 100; i++) {
+    const v = i % 4 === 0 ? 0 : 250; // 25% near-black, 75% near-white
+    twoTone.set([v, v, v, 255], i * 4);
+  }
+  const fullRange = new Uint8ClampedArray(400);
+  for (let i = 0; i < 100; i++) {
+    const v = (i * 255) / 99;
+    fullRange.set([v, v, v, 255], i * 4);
+  }
+  const twoToneStats = computeImageStats(twoTone, 10, 10);
+  const fullRangeStats = computeImageStats(fullRange, 10, 10);
+  assert.ok(twoToneStats.entropy < 1, `expected a two-tone image's entropy well under 1 bit, got ${twoToneStats.entropy}`);
+  assert.ok(
+    fullRangeStats.entropy > twoToneStats.entropy,
+    "expected a full-range image to have higher entropy than a two-tone one"
+  );
 });
 
 test("suggestSettingsForMode returns edges settings with a threshold derived from edge density", () => {
@@ -366,7 +400,7 @@ test("suggestSettingsForMode picks Atkinson dithering for higher-contrast braill
 });
 
 test("suggestSettings combines suggestRenderMode and suggestSettingsForMode", () => {
-  const settings = suggestSettings({ edgeDensity: 60, edgeConcentration: 0.5, stdev: 80, p2: 20, p98: 230 });
+  const settings = suggestSettings({ edgeDensity: 60, edgeConcentration: 0.5, stdev: 80, entropy: 7, p2: 20, p98: 230 });
   assert.equal(settings.renderMode, "edges");
   assert.equal(settings.threshold, 36); // round(60 * 0.6)
 });
