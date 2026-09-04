@@ -28,7 +28,10 @@
           </div>
           <div class="loadError" id="loadError" style="display:none;"></div>
           <div class="thumb" id="thumb">
-            <img id="thumbImg" alt="Source preview">
+            <div class="thumbImgWrap" id="thumbImgWrap">
+              <img id="thumbImg" alt="Source preview">
+              <canvas id="focusCanvas"></canvas>
+            </div>
             <div class="imageInfo" id="imageInfo"></div>
             <button class="btn" id="clearBtn" type="button">Clear image</button>
           </div>
@@ -110,6 +113,19 @@
         <div class="field" id="paletteField">
           <label for="palette">Palette <span class="val">darkest → lightest</span></label>
           <textarea id="palette" rows="2">@%#*+=-:. </textarea>
+        </div>
+
+        <div class="field checkrow" id="adaptiveDetailField">
+          <input type="checkbox" id="adaptiveDetail">
+          <label for="adaptiveDetail">Adaptive detail <span class="val">full palette in busy areas, simplified elsewhere</span></label>
+        </div>
+
+        <div class="field" id="focusRegionField" style="display:none;">
+          <label>Focus area <span class="val" id="focusRegionStatus">optional - always full detail</span></label>
+          <div class="btn-group">
+            <button class="btn" id="drawFocusBtn" type="button">Draw on thumbnail</button>
+            <button class="btn" id="clearFocusBtn" type="button">Clear</button>
+          </div>
         </div>
 
         <div class="field">

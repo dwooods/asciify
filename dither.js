@@ -131,6 +131,77 @@
     return "/";
   }
 
+  // --- Adaptive detail (ASCII mode) -----------------------------------
+  // A per-pixel "complexity" score - a 0-1 blend of local edge density and
+  // local brightness contrast - used to render busy regions with the full
+  // character ramp and visually flat regions with a reduced one, cutting
+  // the tonal jitter a rich ramp produces on faint grain/gradients without
+  // changing the output grid's size. See applyAdaptiveDetail in script.js.
+
+  // Mean Sobel magnitude (on the same scale computeImageStats().edgeDensity
+  // and the Threshold slider already use - see sobelMaxMagnitude, which
+  // despite its name does not itself normalize to 0-1) and the standard
+  // deviation of raw brightness, both measured over a
+  // (2*windowRadius+1)-square window centered on (x, y) (clamped at the
+  // image edges). Two regions of different but uniform brightness (a dark
+  // shirt, a light wall) both score low here: it's the mix of tones/edges
+  // *within* the window that counts, not the window's own absolute
+  // brightness.
+  function localStats(data, magnitudes, x, y, width, height, windowRadius) {
+    let magSum = 0, briSum = 0, briSumSq = 0, count = 0;
+    for (let wy = -windowRadius; wy <= windowRadius; wy++) {
+      for (let wx = -windowRadius; wx <= windowRadius; wx++) {
+        const sx = Math.min(width - 1, Math.max(0, x + wx));
+        const sy = Math.min(height - 1, Math.max(0, y + wy));
+        magSum += magnitudes[sy * width + sx];
+        const brightness = data[rgbaOffset(sx, sy, width)];
+        briSum += brightness;
+        briSumSq += brightness * brightness;
+        count++;
+      }
+    }
+    const edgeDensity = magSum / count;
+    const briMean = briSum / count;
+    const briVariance = Math.max(0, briSumSq / count - briMean * briMean);
+    return { edgeDensity, briStdev: Math.sqrt(briVariance) };
+  }
+
+  // Normalizing scales for the two 0-1 components combined into a
+  // complexity score. A mean local edgeDensity at or above
+  // complexityEdgeScale already reads as a real, sustained edge within the
+  // window (real busy photos top out around 35-60 on this scale - see
+  // suggestRenderMode below); a brightness stdev at or above
+  // complexityContrastScale already reads as a real tonal split, not faint
+  // grain - e.g. a window half at 0 and half at ~130 lands right around
+  // here.
+  const complexityEdgeScale = 80;
+  const complexityContrastScale = 64;
+
+  // Builds a width x height Float32Array of per-pixel complexity scores
+  // (see localStats above), each the average of that pixel's normalized
+  // edge density and normalized brightness contrast within a small window.
+  function computeComplexityMap(data, width, height, windowRadius) {
+    const total = width * height;
+    const magnitudes = new Float32Array(total);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const { dx, dy } = sobelGradient(data, x, y, width, height);
+        magnitudes[y * width + x] = Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
+      }
+    }
+
+    const complexity = new Float32Array(total);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const { edgeDensity, briStdev } = localStats(data, magnitudes, x, y, width, height, windowRadius);
+        const edge = Math.min(1, edgeDensity / complexityEdgeScale);
+        const contrast = Math.min(1, briStdev / complexityContrastScale);
+        complexity[y * width + x] = (edge + contrast) / 2;
+      }
+    }
+    return complexity;
+  }
+
   // Levels adjustment applied before dithering/ramp-mapping: brightness is
   // a flat offset, then blackPoint/whitePoint linearly remap that range to
   // 0-255 (values outside it clamp), the same "brightness + levels" model
@@ -328,6 +399,7 @@
     luminanceToChar,
     sobelGradient,
     edgeChar,
+    computeComplexityMap,
     adjustLevels,
     computeImageStats,
     suggestLevels,

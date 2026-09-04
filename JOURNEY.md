@@ -406,6 +406,78 @@ version did. Concretely:
   shared link's job is reproducing a specific look, and this is now part
   of the look.
 
+## Phase 6: Adaptive detail and manual focus areas
+
+A user brought a four-phase spec for a Python/OpenCV image-to-ASCII
+pipeline — adaptive sampling density, foreground/background separation
+via edge+contrast heuristics, auto- and manually-selected regions of
+interest, multi-scale blending — asking for thoughts before porting it
+into asciify. Worth a real look rather than a quick "sure, sounds good":
+
+- **Phase 2 (foreground enhancement via edge density + local contrast,
+  threshold 0.5) was, functionally, the exact experiment already run and
+  abandoned earlier this phase** — a heuristic guess at "what's the
+  subject" from edge/contrast statistics alone, no real segmentation.
+  We'd already shown that fails on precisely this project's own busy
+  clutter and busy-background photos, for a structural reason (busy
+  backgrounds score just as high on edge/contrast as real subjects do).
+  Flagged this directly rather than re-discovering it by re-implementing it.
+- **The success-criteria percentages throughout the spec (~40% quality
+  improvement, ~45% for desk scenarios, <10ms overhead, etc.) had no
+  stated measurement methodology** and "quality improvement" isn't a
+  defined metric for ASCII art to begin with — called these out as
+  fabricated-looking placeholders rather than real targets to build toward.
+- **Phase 1 (adaptive sampling density) and Phase 3's manual ROI selection
+  were the two genuinely solid pieces** — real, well-established
+  techniques with no hidden failure mode, since neither one needs to
+  guess what the subject is. Recommended building those two and holding
+  off on the rest.
+
+Also worth naming as its own finding: "adaptive sampling density" as
+originally specified — literally varying how many samples get taken per
+region — doesn't translate to this project at all. ASCII/braille output
+is a fixed monospace character grid; you can't sample some regions more
+densely than others without changing the grid itself. The idea that
+*does* translate is adjacent, not identical: keep the grid fixed, and
+vary how much of the character *palette* a cell is allowed to use based
+on local complexity — full ramp where there's real detail, a collapsed
+3-character ramp (darkest/mid/lightest) where the region is visually
+flat, cutting the jitter a rich ramp produces on faint grain or smooth
+gradients. Re-interpreting a request for what a codebase's actual
+constraints can support, rather than either forcing a literal (broken)
+port or silently doing something unrelated, is what made this a real
+feature instead of copied pseudocode.
+
+Built as:
+
+- `computeComplexityMap()` in `dither.js` — a 0-1 blend of local edge
+  density and local brightness contrast in a small window, reusing the
+  existing `sobelGradient` primitive rather than inventing new math.
+  Caught a real, pre-existing wrinkle while calibrating it: the
+  `sobelMaxMagnitude` constant's own comment says it normalizes Sobel
+  magnitude to 0-1, but the code is missing a `× 255` the comment
+  describes — it actually produces values on the same ~0-255-ish scale
+  the Threshold slider and `computeImageStats().edgeDensity` already use
+  (and were calibrated against, per the edges-threshold saga above).
+  Not a bug worth fixing on its own — the rest of the codebase already
+  depends on the *actual* behavior, not the comment — but exactly the
+  kind of thing that produces a nonsensical complexity score (one
+  synthetic test returned 9.6 on a supposedly 0-1 scale) if you trust
+  the comment over the code.
+- A manual focus area: a rectangle drawn directly on the source-image
+  thumbnail (a `<canvas>` overlay, plain mouse events, normalized 0-1
+  coordinates so it's resolution-independent), which always forces the
+  full palette inside it regardless of measured complexity — the
+  "override the heuristic" half, independent of and layered on top of
+  the automatic half.
+- Both are ASCII-mode-only: braille and edges don't have a comparable
+  per-cell "richness" dial the same way a character ramp does.
+- Both included in the settings permalink, and the focus rectangle is
+  cleared on every new image upload (it describes a spot in specific
+  image content, not a standing preference) except the very first
+  upload after restoring one from a shared link — same carve-out
+  `suppressNextAutoSuggest` already uses for auto-suggest.
+
 ## Patterns worth remembering
 
 - **Every real bug this project has shipped was found by actually looking
@@ -460,3 +532,11 @@ version did. Concretely:
   design. Intent (a default value) and behavior (what actually fires)
   are different claims — only one of them was checked before the test
   existed.
+- **A ported spec is a starting point for judgment, not a build order.**
+  Handed a four-phase external spec, one whole phase turned out to be a
+  heuristic already proven not to work on this exact codebase, and the
+  headline feature ("adaptive sampling density") didn't literally fit a
+  monospace character grid at all. Both needed catching *before* writing
+  code, not discovering by implementing them and looking at the result —
+  though looking at the result is still what caught the concrete bug
+  (the mis-normalized Sobel constant) once real building started.

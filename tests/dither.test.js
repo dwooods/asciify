@@ -9,6 +9,7 @@ const {
   luminanceToChar,
   sobelGradient,
   edgeChar,
+  computeComplexityMap,
   adjustLevels,
   computeImageStats,
   suggestLevels,
@@ -186,6 +187,46 @@ test("edgeChar returns a space when the gradient is weaker than the threshold", 
   // dx=5, dy=5 normalizes to a magnitude of ~1.25 (see sobelMaxMagnitude);
   // a threshold above that should suppress it to a blank cell.
   assert.equal(edgeChar(5, 5, 2.0), " ");
+});
+
+test("computeComplexityMap reports near-zero complexity for a flat image", () => {
+  const img = makeImage(10, 10, () => 128);
+  const complexity = computeComplexityMap(img, 10, 10, 2);
+  for (let i = 0; i < complexity.length; i++) {
+    assert.ok(complexity[i] < 0.01, `expected near-zero complexity at index ${i}, got ${complexity[i]}`);
+  }
+});
+
+test("computeComplexityMap reports higher complexity near a hard edge than in a flat region", () => {
+  const img = makeImage(20, 20, (x) => (x < 10 ? 0 : 255));
+  const complexity = computeComplexityMap(img, 20, 20, 2);
+  const atEdge = complexity[10 * 20 + 9]; // column 9, right next to the boundary at x=10
+  const farFromEdge = complexity[10 * 20 + 1]; // column 1, well inside the flat left half
+  assert.ok(atEdge > farFromEdge, `expected higher complexity at the edge (${atEdge}) than far from it (${farFromEdge})`);
+});
+
+test("computeComplexityMap treats two different but individually uniform brightnesses as equally simple", () => {
+  // A dark region and a light region, each flat on its own - complexity
+  // should be low in both, since it measures variation *within* a window,
+  // not the window's own absolute brightness.
+  const img = makeImage(20, 10, (x) => (x < 10 ? 20 : 220));
+  const complexity = computeComplexityMap(img, 20, 10, 1);
+  const darkSide = complexity[5 * 20 + 2]; // well inside the dark half
+  const lightSide = complexity[5 * 20 + 17]; // well inside the light half
+  assert.ok(darkSide < 0.05, `expected the flat dark region to score low, got ${darkSide}`);
+  assert.ok(lightSide < 0.05, `expected the flat light region to score low, got ${lightSide}`);
+});
+
+test("computeComplexityMap scores fine-grained noise as more complex than a smooth gradient", () => {
+  const noisy = makeImage(20, 20, (x, y) => ((x + y) % 2 === 0 ? 0 : 255));
+  const smooth = makeImage(20, 20, (x) => Math.round((x / 19) * 255));
+  const noisyComplexity = computeComplexityMap(noisy, 20, 20, 2);
+  const smoothComplexity = computeComplexityMap(smooth, 20, 20, 2);
+  const midIndex = 10 * 20 + 10;
+  assert.ok(
+    noisyComplexity[midIndex] > smoothComplexity[midIndex],
+    `expected checkerboard noise (${noisyComplexity[midIndex]}) to score higher than a smooth gradient (${smoothComplexity[midIndex]})`
+  );
 });
 
 test("adjustLevels with default settings (0 brightness, 0-255 range) is a no-op", () => {
