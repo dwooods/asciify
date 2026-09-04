@@ -91,6 +91,15 @@ a { color: var(--accent); }
   .layout { grid-template-columns: 1fr; }
 }
 
+.panel, .output-panel {
+  /* Grid items default to min-width:auto, which bases their minimum size
+     on descendants' unconstrained content (e.g. the suggestion previews'
+     non-wrapping <pre> text) instead of the grid track - without this,
+     that content forces .panel wider than its track on narrow screens,
+     which widens the whole page and breaks tap targets on mobile. */
+  min-width: 0;
+}
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -276,6 +285,7 @@ input[type="range"] {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  position: relative;
 }
 .checkrow input { accent-color: var(--accent); width: 16px; height: 16px; }
 .checkrow label {
@@ -311,6 +321,29 @@ input[type="range"] {
 .infoIcon:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
+}
+/* Fallback for touch/keyboard, where the native title tooltip above either
+   doesn't show at all (most mobile browsers ignore title on tap) or isn't
+   reachable without a pointer (keyboard-only users) - toggled by script.js,
+   not shown/hidden by hover, so it works the same way for both. */
+.infoPopover {
+  position: absolute;
+  z-index: 10;
+  top: 100%;
+  right: 0;
+  margin-top: 0.35rem;
+  width: max-content;
+  max-width: 240px;
+  padding: 0.5rem 0.65rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px var(--shadow);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--ink);
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .output-panel {

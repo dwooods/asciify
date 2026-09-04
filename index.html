@@ -67,7 +67,8 @@
         <div class="field checkrow" id="suppressBackgroundField">
           <input type="checkbox" id="suppressBackground">
           <label for="suppressBackground">Suppress background <span class="val" id="suppressBackgroundStatus">on-device AI, adds a few seconds</span></label>
-          <span class="infoIcon" tabindex="0" role="img" aria-label="What Suppress background does" title="Checking this box triggers a real neural network (a lightweight image-segmentation model called U²-Net) to run in your browser via WebAssembly. That takes a couple of seconds the first time you check it for a given photo, since it has to load the model and actually run inference.">ⓘ</span>
+          <span class="infoIcon" id="suppressBackgroundInfoIcon" tabindex="0" role="button" aria-expanded="false" aria-describedby="suppressBackgroundInfoPopover" title="Runs a small AI model (U²-Net) in your browser via WebAssembly to find the photo's subject - takes a couple seconds the first time per photo.">ⓘ</span>
+          <div class="infoPopover" id="suppressBackgroundInfoPopover" role="tooltip" style="display:none;">Runs a small AI model (U²-Net) in your browser via WebAssembly to find the photo's subject - takes a couple seconds the first time per photo.</div>
         </div>
 
         <div class="field">
@@ -118,7 +119,7 @@
 
         <div class="field checkrow" id="adaptiveDetailField">
           <input type="checkbox" id="adaptiveDetail">
-          <label for="adaptiveDetail">Adaptive detail <span class="val">full palette in busy areas, simplified elsewhere</span></label>
+          <label for="adaptiveDetail">Adaptive detail <span class="val" id="adaptiveDetailDesc">full palette in busy areas, simplified elsewhere</span></label>
         </div>
 
         <div class="field" id="focusRegionField" style="display:none;">

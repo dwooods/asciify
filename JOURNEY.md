@@ -478,6 +478,108 @@ Built as:
   upload after restoring one from a shared link — same carve-out
   `suppressNextAutoSuggest` already uses for auto-suggest.
 
+## Phase 7: Touch support, a real mobile layout bug, and edges-mode decluttering
+
+Three small-sounding requests ("add touch support," "add an info icon,"
+"apply adaptive detail's idea to edges mode too") each turned up something
+that only showed up by actually using the feature, not by reading the diff.
+
+- **The focus-area canvas (Phase 6) only had mouse listeners** -
+  `mousedown`/`mousemove`/`mouseup`, no touch equivalent, so drawing a
+  focus rectangle silently did nothing on a phone or tablet. Refactored
+  the drag logic into shared `startFocusDrag`/`updateFocusDrag`/
+  `finishFocusDrag` functions driven by either input type, then added
+  `touchstart`/`touchmove`/`touchend` listeners (`{ passive: false }` +
+  `preventDefault()` while actively drawing, so dragging a finger draws a
+  rectangle instead of scrolling the page). Verified with real
+  `TouchEvent`/`Touch` objects dispatched directly at the canvas -
+  `page.mouse`/`page.touchscreen` both do real hit-testing against
+  viewport-relative coordinates, so a first pass that scrolled the canvas
+  into view *after* computing its bounding box (rather than before) looked
+  broken in exactly the way a genuine handler bug would: the drag appeared
+  to do nothing. Fixed the test, not the code, once the coordinates were
+  confirmed to land correctly - a reminder that a red assertion in a UI
+  test can be the test's own geometry, not the feature.
+- **The Suppress background checkbox's new info icon needed a
+  tap/keyboard-reachable alternative to its `title` tooltip** (most mobile
+  browsers ignore `title` on tap entirely, and it's not reachable without
+  a pointer at all) - added a toggleable `.infoPopover` alongside it,
+  shown/hidden explicitly by script.js rather than by CSS `:hover`. First
+  version of the tooltip text ran ~250 characters describing the model by
+  name and architecture; a screenshot from the user showed it overflowing
+  its own popover box on their screen. Trimmed to ~140 characters that say
+  what it does and how long it takes, dropping the implementation detail
+  nobody asked for - a reminder that "technically accurate and complete"
+  and "fits the affordance it's rendered in" are different bars, and only
+  a real screenshot caught the gap.
+- **A pre-existing horizontal-overflow bug, found while doing the mobile
+  pass the touch-support work called for anyway.** At a 412px mobile
+  viewport, `window.innerWidth` measured 566 - the whole page was wider
+  than the device, silently breaking tap targets (Playwright's `tap()`
+  kept hitting an unrelated element underneath the intended one, since
+  the page had zoomed out to fit). Root cause: the "Suggested settings"
+  previews are `<pre>` blocks with `white-space: pre` - unwrapped by
+  design, so each one's *minimum* content width is the width of its
+  longest unwrapped line, several times wider than the mobile column.
+  `.panel` (a CSS grid item) and `.suggestion` (a flex item) both defaulted
+  to `min-width: auto`, which bases an item's minimum size on its content
+  instead of its track/flex-basis - the classic CSS grid/flexbox "overflow
+  because nobody told it it's allowed to shrink" bug. Tried fixing it on
+  the flex item (`.suggestion { min-width: 0 }`) first, on the theory that
+  the deepest offending box was the right place to fix it; measured no
+  change at all. The actual fix has to be on the grid item itself
+  (`.panel`, `.output-panel { min-width: 0 }`) - the "if overflow isn't
+  visible, this item's automatic minimum size is zero" carve-out in the
+  spec applies to whichever box the *ancestor* layout (grid, in this case)
+  is actually sizing, not to an arbitrary descendant that happens to look
+  responsible. Verified the flex-level fix was genuinely redundant once
+  the grid-level one was in place, and removed it rather than leaving two
+  overlapping explanations in the CSS for one bug.
+- **Extended the same local-complexity gating adaptive detail uses in
+  ASCII mode to edges mode** - but inverted, since the two modes have
+  opposite failure shapes. ASCII's problem was faint grain jittering
+  between adjacent ramp characters, fixed by *reducing* the palette in
+  flat areas. Edges mode's problem (the truck.jpg grille from the
+  line-art investigation below, and the same aliasing on any fine
+  texture) is the opposite: a busy cell has *too many* real edges once
+  downsampled, and Sobel re-detecting all of them produces visual static
+  rather than a readable line. So a busy cell (same `computeComplexityMap`
+  score, same threshold as ASCII's) gets a *higher* effective edge
+  threshold instead of a richer ramp - only the strongest lines in that
+  cell survive. Calibrated by eye against truck.jpg (grille/tread),
+  car.jpg, and high contrast tiger.png (stripe texture, not line art -
+  confirms the fix generalizes past the one motivating case): a boost of
+  60+ on the Threshold slider's 0-254 scale started erasing real outline
+  structure along with the noise on all three; 40 was the highest value
+  that still visibly decluttered the grille/stripes without doing that.
+  The tiger result was the more convincing one of the two - the stripe
+  texture that was pure visual static in the unmodified render actually
+  reads as fur afterward, on an image that was never part of the original
+  bug report.
+
+**Line-art auto-suggest misclassification - investigated, not shipped.**
+truck.jpg and five similar coloring-book-style uploads (spaceship, dog,
+house, boat, car) render far better in braille mode than edges mode - the
+opposite of the edges-threshold heuristic's fix in the earlier phase - but
+auto-suggest's `edgeDensity > 40` rule picks edges mode for them anyway,
+since dense outline art scores just as high on raw edge density as a real
+photo's edges do. Gathered real stats (near-white fraction, midtone
+fraction, and a near-white+near-black "extreme" fraction) across all 26
+test-assets images looking for a signal that separates "line art" from
+"photo where edges mode is actually correct." None had a safe margin -
+`house.jpg`, the least line-art-like of the new uploads, sat within
+0.01-0.04 of images already correctly classified as edges mode
+(`star wars.png`, `high contrast woman.png`, `screenshot photo.png`). Per
+the concentration-metric lesson above (a clean separation in a small
+sample is a signal, not proof), declined to ship a threshold this close to
+existing correct cases on six new examples. The edges-mode adaptive-detail
+work above (this same phase) is a partial, complementary answer - it
+reduces edges mode's noise on this exact kind of image rather than needing
+to first correctly guess "is this line art" at the mode-selection level -
+but doesn't fully close the gap, since braille mode is still the visibly
+better result for these images and auto-suggest still won't reach for it.
+Left as an open question rather than a shipped fix.
+
 ## Patterns worth remembering
 
 - **Every real bug this project has shipped was found by actually looking
@@ -540,3 +642,26 @@ Built as:
   code, not discovering by implementing them and looking at the result —
   though looking at the result is still what caught the concrete bug
   (the mis-normalized Sobel constant) once real building started.
+- **Fix an overflow at the box the outer layout is actually sizing, not
+  the deepest descendant that looks responsible.** A `<pre>` with
+  unwrapped content blew out a flex row, which blew out a CSS grid
+  column, which blew out the whole mobile page. `min-width: 0` on the
+  flex item (the seemingly obvious fix, right next to the offending
+  content) measured zero effect; the actual fix was two layout levels up,
+  on the grid item itself, because that's the box whose own `overflow`
+  property the "automatic minimum size" spec rule actually reads. Same
+  overflow, two candidate fixes, only one real - and only measuring
+  (`window.innerWidth` at a real mobile viewport, not just eyeballing a
+  screenshot) told them apart.
+- **A test failure while a background test run overlaps a file edit isn't
+  necessarily the code's fault.** Started `npm test` in the background,
+  then kept editing `script.js`/`index.html` for an unrelated feature
+  while it ran - this project's test server reads source files fresh off
+  disk per request rather than bundling them, so a page navigation that
+  landed mid-edit got a torn mix of old and new file content. One test
+  failed in a way that looked like a real regression (a restored setting
+  silently reverting to default) but reproduced only when editing and
+  testing overlapped, and vanished on a clean re-run with no code changes
+  in between. Worth remembering because the instinct when a test goes red
+  is to start debugging the diff - checking whether anything touched the
+  files *during* the run is a cheaper first question to ask.
