@@ -1024,3 +1024,40 @@ explanations instead of one open question.
   ("Xu et al. 2017 used multi-orientation phase congruency") corrected a
   vaguer, likely-conflated web-search summary from earlier in the same
   investigation - worth more than the search that originally produced it.
+
+**Addendum: getting the actual foundational paper, and what it confirms.**
+After this phase's investigation, the user found and uploaded the real
+Xu, Zhang, and Wong 2010 "Structure-based ASCII Art" paper directly (the
+one this whole feature already credits as "a simpler relative of") - the
+egress block that stopped every other attempt this session doesn't apply
+to a file handed over directly. Reading it in full clarified something
+today's three attempts had been quietly assuming rather than checking:
+**academic "structure-based ASCII art," as this field defines it, is a
+line-drawing-to-character problem, not a photograph-to-character one.**
+Their actual pipeline vectorizes a line drawing into polylines, then
+iteratively *deforms* those polylines via simulated annealing so they
+match available character shapes better, then substitutes characters -
+there is no step anywhere that takes a raw continuous-tone photograph's
+pixels and shape-matches them directly the way Hand-drawn style's
+`matchGlyph` does. Every example in the paper (a dragon, a temple, a
+train) is a pure line tracing, not a shaded/toned image - much closer to
+this app's existing "Edges" mode than to "ASCII" mode. That reframes
+today's whole investigation: Hand-drawn style was trying to fuse two
+problems the actual literature keeps separate (continuous tone and shape
+matching) into one per-cell greedy decision, which may be a harder
+problem than either half alone.
+
+More directly useful: the paper's own Limitations section, from a method
+with real shape deformation and a proper alignment-insensitive shape
+metric (log-polar histograms, far more sophisticated than this feature's
+NCC), states plainly - *"the extremely limited variety of characters...
+[m]ost font sets do not contain characters representing a rich variety of
+slopes of lines. This makes certain patterns very hard to be faithfully
+represented."* That is an independent, academic confirmation of exactly
+today's charset-curation finding (no printable ASCII character exceeds
+~34% ink coverage, and the dense end is unavoidably clustered) - not
+from three tuning attempts, but from the actual state of the art
+admitting the same ceiling. Worth remembering the plain lesson here: when
+a primary source is finally reachable, it doesn't just answer the
+question that sent you looking for it - it can tell you the question
+itself was aimed at the wrong pipeline.
