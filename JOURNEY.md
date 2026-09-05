@@ -611,7 +611,49 @@ one has. The earlier attempts weren't a wasted first pass so much as
 narrowing down what dimension of difference wasn't the right one to
 measure.
 
-## Patterns worth remembering
+## Phase 8: A real race condition, found by a user report
+
+A user reported that Suppress background's "detecting subject…" message
+sometimes never appeared - unchecking and quickly re-checking the box, or
+switching to a new image right after checking it, would leave the status
+text stuck on its default with no visible feedback, as if the click had
+done nothing.
+
+Reproducing it turned out to be its own small lesson. A first pass at
+racing the real model with fixed `waitForTimeout` delays between actions
+gave wildly inconsistent results run to run - sometimes clean, sometimes
+broken - because WASM inference genuinely blocks the page's main thread
+for stretches, so Playwright's own `check()`/`uncheck()` calls queue up
+behind it rather than landing at the intended moment; a "wait 150ms then
+click" plan doesn't mean what it looks like it means when the page itself
+isn't free to process that click for however long the WASM call is still
+running. Switched to the same technique the existing "unchecking while in
+flight" test already used - a controllable mock `detectForegroundMask()`
+that only resolves when the test explicitly tells it to - and the race
+became fully deterministic instead of a coin flip.
+
+Root cause: unchecking Suppress background resets the status text to
+default and clears the stored mask, but does *not* cancel whatever
+detection request was already in flight - it only marks its eventual
+resolution as a no-op if the box is still unchecked when it resolves (a
+previous fix, in the "Adaptive detail and manual focus areas" phase's era,
+already handles that half correctly). Re-checking before that request
+resolves correctly avoids starting a wasteful second, redundant request -
+but the code that decided to skip a new request never restored the
+"detecting subject…" text either, so the user saw nothing until the
+original, invisible request happened to finish on its own. The underlying
+feature was never actually broken - detection kept working the whole
+time - only its own status text was lying about it, silently, which reads
+as "does this even do anything" the same as if it were.
+
+Fix: split "already have a mask" (render immediately, no async wait
+needed) from "a request is still pending" (restore the detecting text
+and let the existing request's own resolution handle the rest) into two
+separate checks instead of one combined one. One well-targeted comment
+had described the intent for both cases; the code had actually only
+implemented one and a half of them.
+
+
 
 - **Every real bug this project has shipped was found by actually looking
   at output, not by reading code or passing tests.** Export stretching,
