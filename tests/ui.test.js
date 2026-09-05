@@ -282,6 +282,47 @@ test("unchecking Suppress background while detection is still in flight does not
   );
 });
 
+test("re-checking Suppress background while the original request is still in flight shows detecting status again", async () => {
+  // Regression test: unchecking while a request is in flight resets the
+  // status text to default (see the test above) but leaves that request
+  // running - re-checking before it resolves correctly avoids starting a
+  // redundant second request, but used to leave the status text stuck on
+  // that default with no indication anything was happening, as if the
+  // checkbox had silently done nothing, until the original request
+  // eventually resolved on its own.
+  await loadTestImage();
+
+  await page.evaluate(() => {
+    window.__resolveMask = null;
+    window.AsciifySaliency = {
+      detectForegroundMask: () => new Promise((resolve) => { window.__resolveMask = resolve; }),
+    };
+  });
+
+  await page.check("#suppressBackground");
+  await page.waitForFunction(() => typeof window.__resolveMask === "function");
+  assert.equal(await page.textContent("#suppressBackgroundStatus"), "detecting subject…");
+
+  await page.uncheck("#suppressBackground");
+  assert.notEqual(await page.textContent("#suppressBackgroundStatus"), "detecting subject…");
+
+  await page.check("#suppressBackground");
+  assert.equal(
+    await page.textContent("#suppressBackgroundStatus"),
+    "detecting subject…",
+    "expected re-checking to show detecting status again, riding on the still-in-flight original request"
+  );
+
+  // The original (only) in-flight request resolving now should still apply
+  // normally - re-checking must not have started a second, orphaned request.
+  const textBefore = await page.evaluate(() => document.getElementById("output").innerText);
+  await page.evaluate(() => window.__resolveMask(new Uint8Array(320 * 320)));
+  await page.waitForFunction(
+    () => document.getElementById("suppressBackgroundStatus").textContent === "on-device AI, adds a few seconds"
+  );
+  assert.notEqual(await page.evaluate(() => document.getElementById("output").innerText), textBefore);
+});
+
 test("the Suppress background info icon toggles a tap/keyboard-accessible popover", async () => {
   // The native title attribute this icon also carries doesn't reliably show
   // on mobile tap and isn't keyboard-reachable, hence this separate popover
