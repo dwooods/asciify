@@ -202,6 +202,119 @@
     return complexity;
   }
 
+  // --- Hand-drawn style (ASCII mode) -----------------------------------
+  // Structure/glyph matching: instead of mapping a cell's average
+  // brightness to a fixed ramp position (luminanceToChar above), pick
+  // whichever candidate character's own rendered shape - in the real
+  // output font, not an abstraction - actually looks most like that cell's
+  // pixel content. Based on Miyake et al.'s real-time ASCII art technique
+  // (glyph matching via Normalized Cross-Correlation), a simpler relative
+  // of Xu et al.'s "Structure-based ASCII art" (SIGGRAPH/I3D 2010) - see
+  // JOURNEY.md for how this was found and why it replaced an earlier,
+  // abandoned attempt at bitmap-tracing vector line art. script.js builds
+  // the actual glyph atlas (rendering each candidate character to a small
+  // canvas in the real output font) and extracts each cell's own pixel
+  // patch at that same resolution; everything here is pure array math so
+  // it's unit-testable without a canvas.
+
+  // A patch/glyph whose per-pixel standard deviation is below this counts
+  // as "flat" - not "has a tiny bit of real structure worth dividing up to
+  // unit scale." Below this, real content is indistinguishable from JPEG
+  // noise or anti-aliasing dither, and L2-normalizing it anyway would
+  // divide a near-zero vector by a near-zero norm, amplifying that noise
+  // into a full-strength "confident" unit vector - NCC against it is then
+  // essentially random rather than correctly near-zero. Found by testing
+  // against a real photo: before this guard, flat regions (a plain
+  // background) matched wildly different characters cell to cell instead
+  // of consistently falling through to the brightness term below. 0.02 is
+  // small in a 0-1 ink-density space - real edges/strokes produce values
+  // several times larger.
+  const glyphFlatStdevThreshold = 0.02;
+
+  // Mean-centers and L2-normalizes a flat ink-density array (0 = no ink,
+  // 1 = full ink), returning a new Float64Array - standard Normalized
+  // Cross-Correlation preprocessing so the resulting score is invariant to
+  // the patch's own brightness/contrast scale. Returns an all-zero vector
+  // for a "flat" patch (see glyphFlatStdevThreshold) instead of amplifying
+  // noise into an arbitrary unit-scale direction.
+  function normalizeInkPatch(patch) {
+    const n = patch.length;
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += patch[i];
+    mean /= n;
+    const centered = new Float64Array(n);
+    let sumSq = 0;
+    for (let i = 0; i < n; i++) {
+      centered[i] = patch[i] - mean;
+      sumSq += centered[i] * centered[i];
+    }
+    const stdev = Math.sqrt(sumSq / n);
+    if (stdev < glyphFlatStdevThreshold) return centered; // already all-zero from the mean subtraction
+    const norm = Math.sqrt(sumSq);
+    for (let i = 0; i < n; i++) centered[i] /= norm;
+    return centered;
+  }
+
+  function meanInk(patch) {
+    let sum = 0;
+    for (let i = 0; i < patch.length; i++) sum += patch[i];
+    return sum / patch.length;
+  }
+
+  // Builds a glyph atlas from raw { char, inkDensity } bitmaps (all the
+  // same pixel dimensions) by pre-normalizing each once and recording its
+  // own mean ink density, since both are shared across every image cell
+  // matched against this character set - the actual per-cell cost in
+  // matchGlyph is then just one dot product plus one subtraction per
+  // glyph. Also records the achievable meanInk range across the whole
+  // set: a single character only ever covers a fraction of its cell, so
+  // even the densest glyph (M, W, @, and similar - there's no solid block
+  // character in a plain-ASCII set) tops out around 0.3-0.4 mean ink,
+  // nowhere near 1.0. matchGlyph rescales each patch's own mean ink into
+  // this achievable range before comparing - without that, a real image
+  // patch's mean ink (which can genuinely approach 1.0 for a near-black
+  // region) collapses onto whichever glyph is "closest available"
+  // regardless of real brightness differences between patches, which is
+  // exactly what happened before this was added: pure brightness matching
+  // produced a near-solid wall of the single densest character.
+  function buildGlyphAtlas(rawGlyphs) {
+    const atlas = rawGlyphs.map(({ char, inkDensity }) => ({
+      char,
+      normalized: normalizeInkPatch(inkDensity),
+      meanInk: meanInk(inkDensity),
+    }));
+    atlas.minInk = Math.min(...atlas.map((g) => g.meanInk));
+    atlas.maxInk = Math.max(...atlas.map((g) => g.meanInk));
+    return atlas;
+  }
+
+  // Picks the best-matching character for one image patch (an ink-density
+  // array the same size as the atlas's glyph bitmaps) from a glyph atlas
+  // (see buildGlyphAtlas). `structureWeight` (0-1) blends shape matching
+  // (NCC) against brightness matching: 0 is a pure brightness ramp (like
+  // luminanceToChar), 1 ignores tone entirely and matches shape alone.
+  // Pure NCC can't work by itself: it's mean-centered by construction, so
+  // a solid-black patch and a solid-white patch both normalize toward an
+  // all-zero vector and would score identically against every glyph - NCC
+  // captures only relative spatial pattern, never absolute tone. A glyph
+  // whose overall ink density is wildly different from the patch's own
+  // brightness needs to lose even when its shape happens to correlate
+  // well, hence the blend rather than NCC alone.
+  function matchGlyph(imagePatch, glyphAtlas, structureWeight) {
+    const normalizedPatch = normalizeInkPatch(imagePatch);
+    const range = glyphAtlas.maxInk - glyphAtlas.minInk || 1e-9;
+    const patchMeanInk = glyphAtlas.minInk + meanInk(imagePatch) * range;
+    let best = null;
+    for (const glyph of glyphAtlas) {
+      let structureScore = 0;
+      for (let i = 0; i < normalizedPatch.length; i++) structureScore += normalizedPatch[i] * glyph.normalized[i];
+      const brightnessScore = 1 - Math.abs(patchMeanInk - glyph.meanInk) / range;
+      const score = structureWeight * structureScore + (1 - structureWeight) * brightnessScore;
+      if (!best || score > best.score) best = { char: glyph.char, score };
+    }
+    return best;
+  }
+
   // Levels adjustment applied before dithering/ramp-mapping: brightness is
   // a flat offset, then blackPoint/whitePoint linearly remap that range to
   // 0-255 (values outside it clamp), the same "brightness + levels" model
@@ -436,6 +549,8 @@
     sobelGradient,
     edgeChar,
     computeComplexityMap,
+    buildGlyphAtlas,
+    matchGlyph,
     adjustLevels,
     computeImageStats,
     suggestLevels,

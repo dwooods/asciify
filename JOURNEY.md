@@ -738,3 +738,116 @@ implemented one and a half of them.
   in between. Worth remembering because the instinct when a test goes red
   is to start debugging the diff - checking whether anything touched the
   files *during* the run is a cheaper first question to ask.
+
+## Phase 9: Hand-drawn style — chasing JavE, and finding its real limit
+
+The actual, stated goal behind this whole project, said plainly for the
+first time this phase: reproduce the feel of hand-crafted ASCII art like
+JavE (Java Ascii Versatile Editor) and the pieces on asciiart.website -
+not just a brightness ramp, but characters chosen because their *shape*
+matches what's in the image. Braille mode stays as-is; this is entirely
+about ASCII mode.
+
+**Research, and a sandbox wall.** `WebFetch` was completely blocked for
+every domain tried - `jave.de`, a GitHub Pages mirror, even
+`en.wikipedia.org` - confirmed as a blanket egress policy, not a
+domain-specific block. `WebSearch` still worked and found the academic
+grounding (Xu et al.'s SIGGRAPH structure-based ASCII art, and Miyake et
+al.'s simpler real-time variant), but the primary source - JavE's own
+author explaining his algorithms - stayed unreachable until the user
+uploaded the page directly as an `.mht` file. Worth remembering: when a
+tool is flatly unavailable, the fix isn't to give up on the source, it's
+to ask for the content directly.
+
+That page turned out to matter for more than technique. Its author,
+having tried edge-detection/tracing algorithms for image-to-ASCII
+conversion, was explicitly skeptical they were the breakthrough people
+expected ("I do not (yet) think so") - they combined badly with
+greyscale shading and broke on fine detail. And his stated conclusion
+was more humbling than any technique: automatic conversion is best used
+as a *starting point* for hand-editing (the "plastic bag technique" -
+watermark the source image into a text editor and draw over it by hand).
+The tool that inspired this feature's whole name doesn't fully trust
+automatic conversion to replace a human's touch-up pass. That's a real
+ceiling to know about going in, not a discouragement to build the
+feature anyway.
+
+**Prototyping outside the repo first.** Before touching `dither.js` or
+`script.js`, built the technique as standalone scratch scripts and
+validated it against real photos with real screenshots, the same
+discipline as every other phase here - a plausible-sounding technique
+gets no special exemption from "look at the actual output."
+
+The core idea (glyph matching): rasterize every candidate character in
+the real output font into a small bitmap, treat each pixel's darkness as
+"ink," and for each image cell, pick whichever character's ink pattern
+correlates best with that cell's own pixel patch - via Normalized
+Cross-Correlation (NCC), which is invariant to brightness/contrast and
+only measures relative shape. Blend that with a brightness-matching term
+so absolute tone still counts (pure NCC can't tell a solid-black patch
+from a solid-white one - both mean-center to an all-zero vector).
+
+**Two real bugs, found by testing on an actual image (`truck.jpg`), not
+by reading the math:**
+
+1. *Flat-patch noise amplification.* A patch with almost no variance
+   (like a plain white background) would still get divided by its own
+   near-zero norm during normalization, amplifying whatever tiny noise
+   was there into a full-strength "confident" match - so flat regions
+   picked essentially random characters instead of blanks or a low-ink
+   character. Fixed with a stdev threshold: patches under it return an
+   all-zero vector (deliberately "no shape here") instead of a noise-
+   amplified one.
+2. *Brightness-range mismatch.* Comparing an image patch's raw ink
+   density (0-1, can reach nearly solid black) directly against the
+   glyph atlas's *actual achievable* range - a plain ASCII set with no
+   solid block character tops out around 0.34 mean ink - meant every
+   moderately-dark-or-darker patch collapsed onto whatever the single
+   densest available character was. Confirmed visually: pure brightness
+   matching (structure weight 0) on a tiger photo produced a near-solid
+   wall of `M`s. Fixed by rescaling each patch's ink density into the
+   atlas's own `[minInk, maxInk]` range before comparing, instead of
+   assuming the two scales already lined up.
+
+**A harder problem, only partially solved.** Illustration-style images
+(the truck, a toy spaceship, a car) matched the prototype's quality well
+once both bugs were fixed. A tiger photo with fine fur and stripe texture
+did not - nearly every cell registered as "busy" and collapsed onto the
+densest available characters uniformly, worse than the plain tone ramp.
+Fix: reuse the *existing* `computeComplexityMap()` (the same edge-density
++ contrast blend, same 0.12 threshold, that "Adaptive detail" already
+uses) to drop the structure weight from 0.75 to 0.15 in busy cells, so
+texture-heavy regions fall back toward brightness matching instead of
+fighting for a "best" structural match among characters that are all
+roughly equally wrong. This substantially improved the tiger result but
+did not fully fix it - reported to the user honestly as a real,
+documented limitation rather than something to quietly declare solved.
+Real photos with heavy fine texture remain a harder case than clean
+illustrations for this technique; four real-app end-to-end checks after
+integration confirmed the pattern held outside the prototype too -
+truck, spaceship, and dog photos all rendered as clearly recognizable
+shapes with real structural detail, a car photo came through recognizable
+but noisier, and a high-contrast tiger closeup rendered as a dense,
+largely illegible block of the densest characters with none of the
+animal's actual shape visible.
+
+**A safety fix caught before it could ever crash anything.** Hand-drawn
+style samples each character cell at real font resolution (roughly
+10x18px per cell, more than the coarse 2x4-dot braille sampling), so the
+backing canvas for a large custom grid could exceed browsers' actual
+canvas dimension limit (~32767px) - the existing `maxDimension = 2000`
+cap times an 18px cell height alone reaches 36000px. Rather than silently
+shrinking the character grid the user asked for, `handDrawnGlyphCellFor()`
+scales the *glyph* cell size down instead (floored at a legible 4x7px) to
+keep the derived canvas within a safe budget - the grid dimensions the
+user set stay exactly what they asked for.
+
+**Design choice, made explicit rather than left implicit**: Hand-drawn
+style and Adaptive detail are mutually exclusive - checking one unchecks
+the other, both in the UI and through the settings permalink. They're
+two different, incompatible strategies for choosing a character (shape-
+matching vs. a brightness ramp with variable density), and the charset/
+palette controls are meaningless once glyphs are chosen by shape rather
+than by looking them up in a ramp - so those fields hide, too, exactly
+the same pattern `applyRenderModeVisibility()` already used for
+mode-specific fields.
