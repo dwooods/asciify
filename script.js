@@ -452,11 +452,22 @@
       render();
       return;
     }
-    // Already have (or are already fetching) a mask for the current image -
-    // e.g. the box was unchecked and re-checked without a new upload -
-    // nothing to redo, just make sure the render reflects it once ready.
-    if (subjectMask || subjectMaskPending) {
+    // Already have a mask for the current image - e.g. the box was
+    // unchecked and re-checked without a new upload - nothing to redo,
+    // just apply it.
+    if (subjectMask) {
       render();
+      return;
+    }
+    // A request from before the uncheck is still in flight (unchecking
+    // doesn't cancel it, only tells its resolution not to apply - see
+    // requestSubjectMask). Riding on it instead of starting a redundant
+    // second one is correct, but the earlier uncheck already reset this
+    // text to the default - without restoring it here, the user sees no
+    // feedback at all until that request resolves, as if nothing were
+    // happening.
+    if (subjectMaskPending) {
+      suppressBackgroundStatus.textContent = "detecting subject…";
       return;
     }
     requestSubjectMask();
