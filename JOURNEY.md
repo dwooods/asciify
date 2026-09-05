@@ -851,3 +851,176 @@ palette controls are meaningless once glyphs are chosen by shape rather
 than by looking them up in a ramp - so those fields hide, too, exactly
 the same pattern `applyRenderModeVisibility()` already used for
 mode-specific fields.
+
+## Phase 10: Chasing the tiger photo - three fixes tried, one real answer found
+
+Phase 9 shipped Hand-drawn style with an honestly-documented limitation:
+a heavily-textured, high-contrast photo (`high contrast tiger.png`)
+rendered as a dense, illegible block, unlike the illustrations that
+validated the feature. This phase is the story of three different,
+genuinely-tried fixes for that limitation - all scratchpad-only, nothing
+shipped - and what actually turned out to be true once each was tested
+against the real photo instead of just reasoned about.
+
+**Research first, hitting the sandbox's egress wall again.** Asked what
+prior work exists on this exact problem. Found the real academic lineage:
+Xu et al.'s 2010 "Structure-based ASCII art" (already the basis for this
+feature) has two direct follow-ups by an overlapping author group - "ASCII
+Art Synthesis from Natural Photographs" (IEEE TVCG, 2017) and "Texture-
+aware ASCII art synthesis with proportional fonts" (2015) - both aimed at
+exactly this failure mode: extracting real structure from natural photos
+without texture drowning it out. Every one of these (Semantic Scholar,
+IEEE Xplore, ResearchGate, and later a CUHK faculty page and a SlideServe
+deck) was blocked by this sandbox's egress proxy - the same blanket
+non-GitHub block found in Phase 9's JavE research, now confirmed across a
+much wider set of domains. A user-uploaded PDF turned out to be a
+*different* paper than the one being chased (Akiyama's "ASCII Art
+Synthesis with Convolutional Networks", NIPS 2017) - a CNN trained on
+real BBS-sourced ASCII art, but for a different sub-problem (character
+selection from an already-extracted line drawing, not tone-based photo
+rendering). Its related-work section still earned its keep: it corrected
+an earlier web-search summary that had attributed "non-CRF modulation" to
+the 2017 TVCG paper - the paper's own actual technique, per this
+secondary source, is multi-orientation phase congruency via an extended
+Gabor filter. Worth remembering: a search engine's synthesized summary of
+a paper is not the paper, and a secondary source that actually cites it
+correctly is worth more than three search snippets that don't quite agree
+with each other.
+
+**Attempt 1: non-CRF-style surround suppression.** Since the real papers
+were unreachable, built a good-faith reimplementation of the general,
+well-documented technique they build on (Grigorescu et al. 2003's
+non-classical-receptive-field surround suppression for contour
+detection): isolated edges survive, edges embedded in dense surrounding
+texture get inhibited. Implemented as an isotropic annulus-average
+suppression via a summed-area table for O(1) box queries at any radius,
+deliberately simplified from the real oriented/anisotropic model and
+disclosed as such in the prototype's own comments.
+
+Before even testing the idea, found a real bug in the *test harness
+itself*: the prototype's character-grid aspect-ratio formula divided by
+`patchWidth/patchHeight` (≈0.556) instead of multiplying by the app's
+actual `asciiCharAspect` (0.55) - two numerically similar but backwards
+operations, numerically close enough to not immediately look wrong, that
+inflated the tiger's test grid to 175 rows instead of the correct ~60,
+badly distorting the image regardless of what algorithm ran on it. Fixed
+across all three affected scratchpad scripts before drawing any
+conclusion from them - a reminder that a scratchpad prototype's own
+plumbing needs the same "don't guess, verify" discipline as shipped code,
+just at lower stakes.
+
+With the grid fixed, tested three variants side by side on the tiger
+(shipped binary complexity gate, a non-CRF binary gate, a smooth non-CRF
+blend): all three were visually indistinguishable, still an illegible
+wall of dense characters. Isolating further - pure brightness matching
+alone (`structureWeight = 0`, no NCC/structure influence whatsoever)
+produced the same wall. **That ruled out texture/structure confusion
+entirely** - this was never the problem non-CRF was built to solve.
+
+**Finding the real symptom, by comparing against what already works.**
+The plain ramp-based ASCII mode, on the identical image and the identical
+100x60 grid, renders a clearly recognizable tiger face. Comparing the two
+approaches on the exact same per-cell brightness data (not just the
+screenshots) found the actual mechanism: `matchGlyph`'s brightness
+scoring is a nearest-neighbor match against each glyph's *raw* ink
+density, and the Hand-drawn charset's achievable ink range has a real
+gap - four characters (`W`, `@`, `B`, `M`) all cluster within 0.007 of
+each other at the dense end, with nothing between them and the next-
+lightest character 0.03 away. Roughly a quarter of this photo's pixels
+are genuinely very dark (confirmed from the real luminance histogram),
+so a wide range of distinct dark-tail brightness values were all
+nearest-matching onto that one tight cluster - collapsing exactly the
+contrast needed to see the animal's dark facial features. This looked
+like a clean, well-understood, fixable bug.
+
+**Attempt 2: rank-based brightness scoring.** Reused the plain ramp's own
+working idea - `luminanceToChar` assigns an *index* into an evenly-spaced
+array, which by construction can never collapse two different brightness
+levels onto the same crowded cluster the way nearest-ink-density matching
+can. Built `matchGlyphRank`: pre-sort the glyph atlas by ink density,
+assign each patch a target rank via the same `floor(v * n)` formula
+`luminanceToChar` uses, and score brightness by rank-distance instead of
+ink-distance. Verified the atlas rescaling and rank math directly against
+the real 70-character set before rendering anything (confirmed evenly-
+distributed, non-clustered target ranks) - and it still rendered the
+tiger as an illegible wall, at every structure weight tried, including
+pure rank-based brightness alone. It also *regressed* the truck photo
+(one of Phase 9's validated good cases) into something new and worse.
+**A rigorous, well-motivated fix, cleanly falsified by the same
+photo it was built for and a working case it broke instead.**
+
+**Attempt 3: charset curation.** Rasterized the full 95-character
+printable ASCII range (not just the existing 70-character Hand-drawn
+set) to search for a genuinely better-spaced subset. This surfaced a
+fact worth remembering on its own: **no printable ASCII character in this
+font, at this cell size, achieves more than ~34% ink coverage** - the
+character-based ceiling is real and hard, unrelated to which 70 (or 95)
+characters get chosen. The full pool's darkest end is just as clustered
+as the curated 70's (`R` at 0.307, then `W`/`@`/`B`/`M`/`N` all crammed
+into 0.331-0.339) - there simply aren't more distinct dense glyphs to
+choose from. Built a curated 25-character set via greedy minimum-gap
+selection (walk the sorted pool, keep a candidate only once it's ≥0.010
+ink-density away from the last kept one, always keep the single darkest
+as a ceiling anchor) and re-rendered the tiger with the shipped matching
+logic. Still an illegible wall.
+
+**The actual answer, found by checking the data one layer deeper.**
+Before concluding rank-based scoring simply doesn't work, dumped the
+real character-usage histogram it produced against the tiger's 6000
+cells: a smooth, well-distributed spread across dozens of different
+letters (`@` 671, `W` 310, `B` 240, `Q`/`Y` 139 each, tapering gradually
+down through `a`, `p`, `n`, `z`, `t`... to single digits at the light
+end). The *data* was correctly rank-preserving - there was no collapse
+left to fix. Yet the *rendered image* still looked like undifferentiated
+noise. That combination - correct data, illegible picture - means the
+bottleneck was never in the scoring math at all: **a small hand-curated
+tone ramp (`@%#*+=-:. `) reads as visually distinct shades because those
+exact ten symbols were chosen, over decades of ASCII-art convention, for
+perceived tonal weight at a glance - not because of their measured ink
+density.** A wall of real dictionary characters (`W`, `B`, `Q`, `a`, `&`,
+chosen for shape variety because structure-matching needs many different
+silhouettes to match against) doesn't carry that same clean visual-weight
+signal, no matter how correctly its underlying brightness data is
+ordered. Rank-preserving math and perceptual tonal legibility turned out
+to be two different properties - fixing the first doesn't buy the second.
+
+**Where this leaves the tiger case.** Three different, real attempts
+(non-CRF-style texture gating, rank-based brightness scoring, charset
+curation) were each properly tested against the actual failing photo
+rather than reasoned about in the abstract, and each was honestly
+falsified by that test rather than declared a win on theory. The
+underlying limitation looks structural, not a tuning problem: shape-
+diverse structure matching and small-ramp tonal legibility appear to be
+in real tension for a character set trying to do both jobs at once. No
+code shipped from this phase - Hand-drawn style remains exactly as
+Phase 9 left it, with its known limitation now backed by three ruled-out
+explanations instead of one open question.
+
+**Lessons worth keeping:**
+- **A scratchpad prototype's own bugs can look exactly like the
+  phenomenon you're trying to study.** The aspect-ratio bug in the non-CRF
+  harness produced a badly-distorted grid that would have looked like
+  "the algorithm fails on this photo" if not caught before drawing
+  conclusions - the fix (matching the real app's `asciiCharAspect`
+  formula, verified against the app's own actual grid dimensions for the
+  same image) came from checking the harness against ground truth, not
+  from staring harder at the output.
+- **A negative result reached the same way as a positive one is still
+  worth exactly as much.** Three fixes, three real tests against the
+  actual failing photo, three honest falsifications - none of them
+  wasted effort, because each one closed off a specific, previously-live
+  hypothesis (texture confusion, ink-density collapse, poor charset
+  spacing) rather than leaving it as vague, unresolved suspicion.
+- **Well-distributed data and a legible rendering are not the same
+  claim.** The rank-based fix's histogram was correct by every measure
+  checked - yet the image it produced was still illegible. Checking "is
+  the data right" and "does the picture look right" are two different
+  verification steps, and this project's own working process (a real
+  browser/output pass, not just checking the numbers) is exactly the
+  discipline that caught the gap between them here.
+- **A secondary source that gets the citation right beats three search
+  snippets that don't agree.** The Akiyama paper wasn't the one being
+  looked for, but its related-work section's specific, attributed claim
+  ("Xu et al. 2017 used multi-orientation phase congruency") corrected a
+  vaguer, likely-conflated web-search summary from earlier in the same
+  investigation - worth more than the search that originally produced it.
