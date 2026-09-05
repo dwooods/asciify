@@ -426,6 +426,85 @@ test("Adaptive detail changes the ASCII render while keeping only palette charac
   assert.equal(await page.evaluate(() => document.getElementById("output").innerText), before);
 });
 
+test("Hand-drawn style is offered only in ASCII mode and is mutually exclusive with Adaptive detail", async () => {
+  await loadTestImage();
+  await page.selectOption("#renderMode", "braille");
+  assert.equal(await page.isVisible("#handDrawnStyleField"), false);
+
+  await page.selectOption("#renderMode", "edges");
+  assert.equal(await page.isVisible("#handDrawnStyleField"), false);
+
+  await page.selectOption("#renderMode", "ascii");
+  assert.equal(await page.isVisible("#handDrawnStyleField"), true);
+  assert.equal(await page.isVisible("#charsetField"), true);
+  assert.equal(await page.isVisible("#paletteField"), true);
+
+  await page.check("#adaptiveDetail");
+  assert.equal(await page.isVisible("#handDrawnStyleField"), true, "Hand-drawn style stays reachable so it can still be turned on");
+  await page.check("#handDrawnStyle");
+  await page.waitForTimeout(100);
+  assert.equal(await page.isChecked("#adaptiveDetail"), false, "expected checking Hand-drawn style to uncheck Adaptive detail");
+  assert.equal(await page.isVisible("#charsetField"), false, "charset is meaningless once glyphs are chosen by shape-matching");
+  assert.equal(await page.isVisible("#paletteField"), false);
+  assert.equal(
+    await page.isVisible("#adaptiveDetailField"),
+    false,
+    "Adaptive detail doesn't apply during Hand-drawn style, same as charset/palette"
+  );
+  assert.equal(await page.isVisible("#focusRegionField"), false);
+  assert.equal(await page.isVisible("#handDrawnStyleField"), true, "its own checkbox stays visible/reachable to turn it back off");
+
+  // The only way back is unchecking Hand-drawn style itself - Adaptive
+  // detail's own checkbox is hidden while Hand-drawn style is active.
+  await page.uncheck("#handDrawnStyle");
+  await page.waitForTimeout(100);
+  assert.equal(await page.isVisible("#charsetField"), true);
+  assert.equal(await page.isVisible("#adaptiveDetailField"), true);
+  assert.equal(await page.isChecked("#adaptiveDetail"), false, "Adaptive detail doesn't silently come back on its own");
+
+  await page.check("#adaptiveDetail");
+  await page.waitForTimeout(100);
+  await page.check("#handDrawnStyle");
+  await page.waitForTimeout(100);
+  assert.equal(await page.isChecked("#adaptiveDetail"), false, "expected checking Hand-drawn style to uncheck Adaptive detail again");
+});
+
+test("Hand-drawn style renders ASCII output without erroring, using only its own charset", async () => {
+  await page.setInputFiles("#filepicker", photoImagePath);
+  await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await page.selectOption("#renderMode", "ascii");
+  await page.waitForTimeout(150);
+  const before = await page.evaluate(() => document.getElementById("output").innerText);
+
+  await page.check("#handDrawnStyle");
+  await page.waitForTimeout(300);
+  const after = await page.evaluate(() => document.getElementById("output").innerText);
+
+  assert.notEqual(after, before, "expected Hand-drawn style to change the rendered output");
+  assert.ok(after.replace(/\n/g, "").length > 0, "expected non-empty output");
+
+  // Unchecking restores the standard ramp-based render.
+  await page.uncheck("#handDrawnStyle");
+  await page.waitForTimeout(150);
+  assert.equal(await page.evaluate(() => document.getElementById("output").innerText), before);
+});
+
+test("Hand-drawn style round-trips through the settings permalink and resets to off", async () => {
+  await page.goto(`${baseUrl}/index.html?mode=ascii&handdrawn=1`, { waitUntil: "domcontentloaded" });
+  assert.equal(await page.isChecked("#handDrawnStyle"), true);
+  assert.equal(await page.isChecked("#adaptiveDetail"), false);
+  assert.equal(await page.isVisible("#charsetField"), false);
+
+  await loadTestImage();
+  const url = new URL(page.url());
+  assert.equal(url.searchParams.get("handdrawn"), "1");
+
+  await page.click("#resetBtn");
+  await page.waitForTimeout(100);
+  assert.equal(await page.isChecked("#handDrawnStyle"), false);
+  assert.equal(new URL(page.url()).searchParams.get("handdrawn"), null);
+});
+
 test("drawing and clearing a focus area updates status and the ASCII render", async () => {
   await page.setInputFiles("#filepicker", photoImagePath);
   await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");

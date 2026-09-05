@@ -18,6 +18,8 @@
     sobelGradient,
     edgeChar,
     computeComplexityMap,
+    buildGlyphAtlas,
+    matchGlyph,
     adjustLevels,
     computeImageStats,
     suggestRenderMode,
@@ -59,6 +61,13 @@
   // character ramp in visually flat/simple cells and the full palette in
   // busy ones, instead of always using the full palette everywhere.
   let adaptiveDetail = false;
+  // ASCII mode only, independent of Adaptive detail: when true,
+  // computeAsciiLines() picks each cell's character by matching the
+  // candidate glyphs' own rendered shapes against that cell's pixel
+  // content (see buildGlyphAtlas/matchGlyph in dither.js and
+  // getHandDrawnGlyphAtlas/computeHandDrawnPatches below), instead of a
+  // brightness-ramp lookup.
+  let handDrawnStyle = false;
   // A user-drawn rectangle (normalized 0-1 image coordinates, or null) that
   // always gets the full palette regardless of measured complexity - set by
   // dragging on the thumbnail overlay (see focusCanvas's listeners below).
@@ -123,6 +132,7 @@
     palette: asciiRamp,
     suppressBackground: false,
     adaptiveDetail: false,
+    handDrawnStyle: false,
   };
 
   const canvas = document.createElement("canvas");
@@ -139,6 +149,8 @@
   const adaptiveDetailField = $("#adaptiveDetailField");
   const adaptiveDetailInput = $("#adaptiveDetail");
   const adaptiveDetailDesc = $("#adaptiveDetailDesc");
+  const handDrawnStyleField = $("#handDrawnStyleField");
+  const handDrawnStyleInput = $("#handDrawnStyle");
   const focusRegionField = $("#focusRegionField");
   const focusRegionStatus = $("#focusRegionStatus");
   const drawFocusBtn = $("#drawFocusBtn");
@@ -311,10 +323,16 @@
     ditherField.style.display = renderMode === "braille" ? "" : "none";
     thresholdField.style.display = renderMode === "ascii" ? "none" : "";
     invertField.style.display = renderMode === "edges" ? "none" : "";
-    charsetField.style.display = renderMode === "ascii" ? "" : "none";
-    paletteField.style.display = renderMode === "ascii" ? "" : "none";
-    adaptiveDetailField.style.display = renderMode === "ascii" || renderMode === "edges" ? "" : "none";
-    focusRegionField.style.display = (renderMode === "ascii" || renderMode === "edges") && adaptiveDetail ? "" : "none";
+    // Hand-drawn style picks its own fixed structural character set (see
+    // getHandDrawnGlyphAtlas) and always applies its own complexity-based
+    // weighting internally - the custom palette and Adaptive detail's ramp
+    // reduction don't apply on top of it, so both hide while it's active.
+    charsetField.style.display = renderMode === "ascii" && !handDrawnStyle ? "" : "none";
+    paletteField.style.display = renderMode === "ascii" && !handDrawnStyle ? "" : "none";
+    handDrawnStyleField.style.display = renderMode === "ascii" ? "" : "none";
+    adaptiveDetailField.style.display = (renderMode === "ascii" && !handDrawnStyle) || renderMode === "edges" ? "" : "none";
+    focusRegionField.style.display =
+      ((renderMode === "ascii" && !handDrawnStyle) || renderMode === "edges") && adaptiveDetail ? "" : "none";
     adaptiveDetailDesc.textContent =
       renderMode === "edges" ? "fewer stray lines in busy areas" : "full palette in busy areas, simplified elsewhere";
   }
@@ -497,12 +515,35 @@
 
   adaptiveDetailInput.addEventListener("change", function () {
     adaptiveDetail = this.checked;
+    if (adaptiveDetail && handDrawnStyle) {
+      handDrawnStyle = false;
+      handDrawnStyleInput.checked = false;
+    }
     applyRenderModeVisibility();
     if (!adaptiveDetail) {
       cancelFocusDrawing();
       focusRegion = null;
       updateFocusOverlay();
     }
+    updateUrl();
+    render();
+  });
+
+  // Hand-drawn style and Adaptive detail both decide how much of the
+  // character set a cell gets to use, in incompatible ways (a ramp
+  // reduction vs. a completely different character-selection algorithm) -
+  // mutually exclusive rather than trying to define what combining them
+  // would even mean.
+  handDrawnStyleInput.addEventListener("change", function () {
+    handDrawnStyle = this.checked;
+    if (handDrawnStyle && adaptiveDetail) {
+      adaptiveDetail = false;
+      adaptiveDetailInput.checked = false;
+      cancelFocusDrawing();
+      focusRegion = null;
+      updateFocusOverlay();
+    }
+    applyRenderModeVisibility();
     updateUrl();
     render();
   });
@@ -699,6 +740,8 @@
 
     adaptiveDetail = DEFAULTS.adaptiveDetail;
     adaptiveDetailInput.checked = adaptiveDetail;
+    handDrawnStyle = DEFAULTS.handDrawnStyle;
+    handDrawnStyleInput.checked = handDrawnStyle;
     focusRegion = null;
     cancelFocusDrawing();
     updateFocusOverlay();
@@ -957,6 +1000,168 @@
     return imageData;
   }
 
+  // --- Hand-drawn style (ASCII mode) -----------------------------------
+  // See buildGlyphAtlas/matchGlyph in dither.js for the actual matching
+  // math and JOURNEY.md for how this replaced an earlier, abandoned
+  // vector-tracing attempt. Everything here is the DOM/canvas side: build
+  // a small bitmap of what each candidate character actually looks like
+  // when rendered in the real output font, and sample each cell's own
+  // pixel content at that same resolution so the two are comparable.
+
+  // Base glyph-cell pixel resolution: fine enough to tell characters'
+  // shapes apart, coarse enough to stay fast. Calibrated by testing
+  // against real photos and illustrations (see JOURNEY.md), not derived
+  // from anything about the font itself.
+  const handDrawnBaseGlyphCellWidth = 10;
+  const handDrawnBaseGlyphCellHeight = 18;
+
+  // A broad candidate set spanning full blocks, mid-tones, and punctuation
+  // with real line/corner/curve shapes - deliberately not pre-ordered by
+  // brightness the way the customizable ASCII palette is, since matching
+  // is shape+brightness driven, not a fixed ramp position.
+  const handDrawnCharset = ' .\'`^",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$';
+
+  // Browsers throw rather than degrade once a canvas dimension gets large
+  // enough (see maxDimension above) - this mode's intermediate canvas is
+  // gridWidth*cellWidth x gridHeight*cellHeight, so at the character
+  // grid's own existing maxDimension cap, the tall axis alone
+  // (2000 * 18 = 36000) can already exceed a browser's own canvas size
+  // limit on its own. Rather than silently shrinking the character grid
+  // itself (surprising - every other mode honors the width/height the
+  // user actually asked for), the glyph cell resolution scales down
+  // instead, floored at a size still fine enough to tell characters apart.
+  const handDrawnSafeCanvasDimension = 16000;
+  const handDrawnMinGlyphCellWidth = 4;
+  const handDrawnMinGlyphCellHeight = 7;
+
+  function handDrawnGlyphCellFor(gridWidth, gridHeight) {
+    const scale = Math.min(
+      1,
+      handDrawnSafeCanvasDimension / (gridWidth * handDrawnBaseGlyphCellWidth),
+      handDrawnSafeCanvasDimension / (gridHeight * handDrawnBaseGlyphCellHeight)
+    );
+    return {
+      cellWidth: Math.max(handDrawnMinGlyphCellWidth, Math.round(handDrawnBaseGlyphCellWidth * scale)),
+      cellHeight: Math.max(handDrawnMinGlyphCellHeight, Math.round(handDrawnBaseGlyphCellHeight * scale)),
+    };
+  }
+
+  // Cached by cell size, since rasterizing ~70 characters is real work and
+  // the vast majority of renders use the base (unshrunk) cell size - only
+  // an extreme custom width/height needs a different atlas at all.
+  const handDrawnAtlasCache = new Map();
+
+  function getHandDrawnGlyphAtlas(cellWidth, cellHeight) {
+    const key = `${cellWidth}x${cellHeight}`;
+    if (handDrawnAtlasCache.has(key)) return handDrawnAtlasCache.get(key);
+
+    const glyphCanvas = document.createElement("canvas");
+    glyphCanvas.width = cellWidth;
+    glyphCanvas.height = cellHeight;
+    const glyphCtx = glyphCanvas.getContext("2d", { willReadFrequently: true });
+    // Matches #output's real font stack, so the atlas reflects what the
+    // browser will actually render on screen, not an assumed shape.
+    const fontFamily = getComputedStyle(output).fontFamily;
+
+    const rawGlyphs = [];
+    for (const char of handDrawnCharset) {
+      glyphCtx.fillStyle = "white";
+      glyphCtx.fillRect(0, 0, cellWidth, cellHeight);
+      glyphCtx.fillStyle = "black";
+      glyphCtx.font = `${cellHeight}px ${fontFamily}`;
+      glyphCtx.textAlign = "center";
+      glyphCtx.textBaseline = "middle";
+      // A small vertical nudge - textBaseline "middle" sits a bit high of
+      // a monospace cell's actual visual center in most fonts.
+      glyphCtx.fillText(char === " " ? "" : char, cellWidth / 2, cellHeight / 2 + cellHeight * 0.05);
+
+      const imageData = glyphCtx.getImageData(0, 0, cellWidth, cellHeight);
+      const inkDensity = new Array(cellWidth * cellHeight);
+      for (let i = 0; i < inkDensity.length; i++) inkDensity[i] = (255 - imageData.data[i * 4]) / 255;
+      rawGlyphs.push({ char, inkDensity });
+    }
+
+    const atlas = buildGlyphAtlas(rawGlyphs);
+    handDrawnAtlasCache.set(key, atlas);
+    return atlas;
+  }
+
+  // Renders the source image at gridWidth*cellWidth x gridHeight*cellHeight
+  // (the same luminosity-composite + levels pipeline prepareCharacterGrid
+  // uses, just at finer resolution) and extracts each character cell's own
+  // pixel content as an ink-density patch - same polarity and dimensions
+  // as the glyph atlas's bitmaps, so matchGlyph can compare them directly.
+  function computeHandDrawnPatches(gridWidth, gridHeight, cellWidth, cellHeight) {
+    const fullWidth = gridWidth * cellWidth;
+    const fullHeight = gridHeight * cellHeight;
+    canvas.width = fullWidth;
+    canvas.height = fullHeight;
+
+    context.globalCompositeOperation = "source-over";
+    context.fillStyle = "white";
+    context.fillRect(0, 0, fullWidth, fullHeight);
+
+    context.globalCompositeOperation = "luminosity";
+    context.imageSmoothingEnabled = true;
+    if ("imageSmoothingQuality" in context) context.imageSmoothingQuality = "high";
+    context.drawImage(image, 0, 0, fullWidth, fullHeight);
+
+    const imageData = context.getImageData(0, 0, fullWidth, fullHeight);
+    applyLevels(imageData.data, fullWidth, fullHeight);
+
+    const patches = new Array(gridWidth * gridHeight);
+    for (let cy = 0; cy < gridHeight; cy++) {
+      for (let cx = 0; cx < gridWidth; cx++) {
+        const patch = new Array(cellWidth * cellHeight);
+        for (let py = 0; py < cellHeight; py++) {
+          for (let px = 0; px < cellWidth; px++) {
+            const lum = imageData.data[rgbaOffset(cx * cellWidth + px, cy * cellHeight + py, fullWidth)];
+            patch[py * cellWidth + px] = (255 - lum) / 255;
+          }
+        }
+        patches[cy * gridWidth + cx] = patch;
+      }
+    }
+    return patches;
+  }
+
+  // How much lower the shape-matching weight drops in a "busy" cell (see
+  // adaptiveDetailThreshold below) versus a normal one. Confirmed by
+  // testing against a real high-texture photo: at a high, uniform
+  // structureWeight, fine fur/stripe texture matched almost entirely onto
+  // the densest available characters (a wall of "M"/"W"/"@") - worse than
+  // a plain brightness ramp, the same failure shape edges mode has on
+  // texture (see the "edges mode decluttering" phase in JOURNEY.md).
+  // Reusing the same busy-cell gate (and threshold) Adaptive Detail
+  // already uses lets busy cells fall back toward brightness matching
+  // instead of forcing a specific shape onto what's actually noise.
+  const handDrawnStructureWeight = 0.75;
+  const handDrawnBusyStructureWeight = 0.15;
+
+  function computeHandDrawnAsciiLines() {
+    const { data, width, height } = prepareCharacterGrid();
+    const complexity = computeComplexityMap(data, width, height, adaptiveDetailWindowRadius);
+    const { cellWidth, cellHeight } = handDrawnGlyphCellFor(width, height);
+    const atlas = getHandDrawnGlyphAtlas(cellWidth, cellHeight);
+    const patches = computeHandDrawnPatches(width, height, cellWidth, cellHeight);
+
+    const lines = [];
+    for (let y = 0; y < height; y++) {
+      let line = "";
+      for (let x = 0; x < width; x++) {
+        if (isBackgroundPixel(x, y, width, height)) {
+          line += " ";
+          continue;
+        }
+        const busy = complexity[y * width + x] >= adaptiveDetailThreshold;
+        const weight = busy ? handDrawnBusyStructureWeight : handDrawnStructureWeight;
+        line += matchGlyph(patches[y * width + x], atlas, weight).char;
+      }
+      lines.push(line);
+    }
+    return lines;
+  }
+
   // Window radius (in character-grid cells) computeComplexityMap() looks at
   // around each cell - "3-5 pixel window" at this grid's resolution.
   const adaptiveDetailWindowRadius = 2;
@@ -979,6 +1184,8 @@
   }
 
   function computeAsciiLines() {
+    if (handDrawnStyle) return computeHandDrawnAsciiLines();
+
     // Falls back to the standard ramp if the palette box is emptied out -
     // an empty ramp has no valid character to index into.
     const ramp = paletteInput.value || asciiRamp;
@@ -1296,6 +1503,7 @@
         params.set("focus", [r.x0, r.y0, r.x1, r.y1].map((v) => v.toFixed(3)).join(","));
       }
     }
+    if (handDrawnStyle) params.set("handdrawn", "1");
 
     const query = params.toString();
     history.replaceState(null, "", query ? `?${query}` : location.pathname);
@@ -1407,6 +1615,18 @@
         const valid = parts.length === 4 && parts.every((v) => Number.isFinite(v) && v >= 0 && v <= 1) && x0 < x1 && y0 < y1;
         if (valid) focusRegion = { x0, y0, x1, y1 };
       }
+      applyRenderModeVisibility();
+    }
+
+    if (params.get("handdrawn") === "1") {
+      handDrawnStyle = true;
+      handDrawnStyleInput.checked = true;
+      // Mutually exclusive with Adaptive detail (see the checkbox
+      // listeners) - a permalink naming both is unusual, but Hand-drawn
+      // style wins since it's the more specific of the two.
+      adaptiveDetail = false;
+      adaptiveDetailInput.checked = false;
+      focusRegion = null;
       applyRenderModeVisibility();
     }
   }

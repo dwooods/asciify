@@ -10,6 +10,8 @@ const {
   sobelGradient,
   edgeChar,
   computeComplexityMap,
+  buildGlyphAtlas,
+  matchGlyph,
   adjustLevels,
   computeImageStats,
   suggestLevels,
@@ -227,6 +229,85 @@ test("computeComplexityMap scores fine-grained noise as more complex than a smoo
     noisyComplexity[midIndex] > smoothComplexity[midIndex],
     `expected checkerboard noise (${noisyComplexity[midIndex]}) to score higher than a smooth gradient (${smoothComplexity[midIndex]})`
   );
+});
+
+// A 5x7 "font" grid (rough monospace character proportions) for
+// buildGlyphAtlas/matchGlyph tests - 1 = ink, 0 = no ink.
+function glyphBitmap(rows) {
+  const arr = [];
+  for (const row of rows) for (const ch of row) arr.push(ch === "#" ? 1 : 0);
+  return arr;
+}
+
+const testGlyphs = [
+  { char: " ", inkDensity: glyphBitmap([".....", ".....", ".....", ".....", ".....", ".....", "....."]) },
+  { char: "#", inkDensity: glyphBitmap(["#####", "#####", "#####", "#####", "#####", "#####", "#####"]) },
+  { char: "-", inkDensity: glyphBitmap([".....", ".....", ".....", "#####", ".....", ".....", "....."]) },
+  { char: "|", inkDensity: glyphBitmap(["..#..", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."]) },
+  { char: "/", inkDensity: glyphBitmap(["....#", "...#.", "..#..", "..#..", ".#...", "#....", "....."]) },
+  { char: "\\", inkDensity: glyphBitmap(["#....", ".#...", "..#..", "..#..", "...#.", "....#", "....."]) },
+];
+
+test("matchGlyph picks the glyph whose shape exactly matches the image patch", () => {
+  const atlas = buildGlyphAtlas(testGlyphs);
+  const horizontal = glyphBitmap([".....", ".....", ".....", "#####", ".....", ".....", "....."]);
+  const vertical = glyphBitmap(["..#..", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."]);
+  const diagonal = glyphBitmap(["....#", "...#.", "..#..", "..#..", ".#...", "#....", "....."]);
+  assert.equal(matchGlyph(horizontal, atlas, 0.7).char, "-");
+  assert.equal(matchGlyph(vertical, atlas, 0.7).char, "|");
+  assert.equal(matchGlyph(diagonal, atlas, 0.7).char, "/");
+});
+
+test("matchGlyph distinguishes a solid-dark patch from a blank patch by brightness, not just shape", () => {
+  // Regression test: pure NCC mean-centers every patch, so a solid-black
+  // and a solid-white patch both normalize toward an all-zero vector and
+  // would score identically against every glyph on shape alone - only the
+  // brightness term (blended in via structureWeight < 1) can tell them
+  // apart.
+  const atlas = buildGlyphAtlas(testGlyphs);
+  const blank = glyphBitmap([".....", ".....", ".....", ".....", ".....", ".....", "....."]);
+  const solid = glyphBitmap(["#####", "#####", "#####", "#####", "#####", "#####", "#####"]);
+  assert.equal(matchGlyph(blank, atlas, 0.7).char, " ");
+  assert.equal(matchGlyph(solid, atlas, 0.7).char, "#");
+});
+
+test("matchGlyph rescales patch brightness into the atlas's own achievable ink range", () => {
+  // Regression test: a glyph set's densest character only ever covers a
+  // fraction of its cell (no solid block in plain ASCII), so its meanInk
+  // tops out well under 1.0. Comparing an image patch's raw meanInk
+  // directly against that narrow achievable range collapsed every
+  // moderately-dark-or-darker patch onto the single densest glyph
+  // regardless of real brightness differences between them - confirmed
+  // against a real photo, where pure brightness matching (structureWeight
+  // 0) produced a near-solid wall of one character. Here, a glyph set
+  // with a low achievable ceiling (max meanInk ~0.2) must still tell two
+  // very different real patch brightnesses apart.
+  const lowCeilingGlyphs = [
+    { char: " ", inkDensity: glyphBitmap([".....", ".....", ".....", ".....", ".....", ".....", "....."]) },
+    { char: ".", inkDensity: glyphBitmap([".....", ".....", ".....", ".....", ".....", "..#..", "....."]) },
+    { char: ":", inkDensity: glyphBitmap([".....", "..#..", ".....", ".....", "..#..", ".....", "....."]) },
+  ];
+  const atlas = buildGlyphAtlas(lowCeilingGlyphs);
+  const lightPatch = new Array(35).fill(0.1); // uniformly barely-inked
+  const darkPatch = new Array(35).fill(0.9); // uniformly heavily-inked
+  const lightMatch = matchGlyph(lightPatch, atlas, 0);
+  const darkMatch = matchGlyph(darkPatch, atlas, 0);
+  assert.notEqual(lightMatch.char, darkMatch.char, "expected distinctly different brightnesses to pick different glyphs");
+  assert.equal(darkMatch.char, ":", "expected the darkest available patch to pick the densest available glyph");
+});
+
+test("matchGlyph treats a near-flat patch as having no structure to match", () => {
+  // Regression test: L2-normalizing a near-zero-variance patch used to
+  // divide a near-zero vector by a near-zero norm, amplifying tiny noise
+  // into a full-strength "confident" unit vector - NCC against it was then
+  // essentially random instead of correctly near-zero. A nearly (but not
+  // exactly) flat patch should still be decided by brightness, the same
+  // as an exactly flat one.
+  const atlas = buildGlyphAtlas(testGlyphs);
+  const almostBlank = glyphBitmap([".....", ".....", "....:", ".....", ".....", ".....", "....."]).map((v) =>
+    v === 1 ? 0.01 : 0
+  );
+  assert.equal(matchGlyph(almostBlank, atlas, 0.9).char, " ");
 });
 
 test("adjustLevels with default settings (0 brightness, 0-255 range) is a no-op", () => {
