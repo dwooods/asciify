@@ -134,6 +134,23 @@
           <input type="range" id="handDrawnDetail" min="4" max="32" value="32">
         </div>
 
+        <div class="field checkrow" id="handDrawnOutlineField" style="display:none;">
+          <input type="checkbox" id="handDrawnOutline">
+          <label for="handDrawnOutline">Trace outline first <span class="val">matches shape against edges, not tone</span></label>
+          <span class="infoIcon" id="handDrawnOutlineInfoIcon" tabindex="0" role="button" aria-expanded="false" aria-describedby="handDrawnOutlineInfoPopover" title="Extracts a black-outline edge map of the photo first, then matches characters against that instead of raw brightness. Can make a heavily-textured photo (fur, grain) far more recognizable than Hand-drawn style alone, at the cost of a noisier, sketch-like look on clean illustrations.">ⓘ</span>
+          <div class="infoPopover" id="handDrawnOutlineInfoPopover" role="tooltip" style="display:none;">Extracts a black-outline edge map of the photo first, then matches characters against that instead of raw brightness. Can make a heavily-textured photo (fur, grain) far more recognizable than Hand-drawn style alone, at the cost of a noisier, sketch-like look on clean illustrations.</div>
+        </div>
+
+        <div class="field" id="handDrawnOutlineThresholdField" style="display:none;">
+          <label for="handDrawnOutlineThreshold">Edge threshold <span class="val" id="handDrawnOutlineThresholdVal">38</span></label>
+          <input type="range" id="handDrawnOutlineThreshold" min="0" max="254" value="38">
+        </div>
+
+        <div class="field checkrow" id="handDrawnOutlineBlurField" style="display:none;">
+          <input type="checkbox" id="handDrawnOutlineBlur">
+          <label for="handDrawnOutlineBlur">Reduce noise <span class="val">smooths the outline before tracing - cleaner but less fine detail</span></label>
+        </div>
+
         <div class="field" id="focusRegionField" style="display:none;">
           <label>Focus area <span class="val" id="focusRegionStatus">optional - always full detail</span></label>
           <div class="btn-group">

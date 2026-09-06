@@ -17,6 +17,7 @@
     luminanceToChar,
     sobelGradient,
     edgeChar,
+    boxBlurLuminance,
     computeComplexityMap,
     buildGlyphAtlas,
     matchGlyph,
@@ -81,6 +82,31 @@
   // JOURNEY.md for why this - not a global remap - is the version that
   // actually helps a busy photo without visibly degrading a clean one.
   let handDrawnDetail = 32;
+  // "Trace outline first" (Hand-drawn style only): extracts a binary
+  // black-outline edge map of the photo (reusing the same Sobel gradient
+  // that powers Edges mode) and matches glyphs against THAT instead of
+  // raw brightness patches - the actual academic "structure-based ASCII
+  // art" pipeline (vectorize a line drawing, then match characters to it)
+  // that plain Hand-drawn style's direct-tone matching doesn't follow.
+  // See JOURNEY.md: this sidesteps the brightness-term dark-tail collapse
+  // that limited every earlier fix, since a binary outline has no
+  // continuous tone to collapse - at the cost of a noisier look on clean
+  // illustrations, which is why it's a separate opt-in, not a replacement
+  // for Hand-drawn style's default behavior.
+  let handDrawnOutline = false;
+  // 0-254, same convention as the existing braille/edges Threshold slider
+  // (edgeChar's own magnitude normalization) - reused directly rather than
+  // inventing a second scale. 38 was the value real-photo testing (see
+  // JOURNEY.md) found to catch genuine fur/contour edges on a hard photo
+  // without the default Edges-mode threshold's much higher bar suppressing
+  // them entirely.
+  let handDrawnOutlineThreshold = 38;
+  // Off by default: real-photo testing found blurring before edge
+  // detection cleans up noise on already-clean illustrations, but softens
+  // exactly the fur/texture edges a hard, textured photo needs kept sharp -
+  // this control exists specifically for the "photos have too much noise"
+  // case, not as a universally-better default. See JOURNEY.md.
+  let handDrawnOutlineBlur = false;
   // A user-drawn rectangle (normalized 0-1 image coordinates, or null) that
   // always gets the full palette regardless of measured complexity - set by
   // dragging on the thumbnail overlay (see focusCanvas's listeners below).
@@ -147,6 +173,9 @@
     adaptiveDetail: false,
     handDrawnStyle: false,
     handDrawnDetail: 32,
+    handDrawnOutline: false,
+    handDrawnOutlineThreshold: 38,
+    handDrawnOutlineBlur: false,
   };
 
   const canvas = document.createElement("canvas");
@@ -168,6 +197,13 @@
   const handDrawnDetailField = $("#handDrawnDetailField");
   const handDrawnDetailInput = $("#handDrawnDetail");
   const handDrawnDetailVal = $("#handDrawnDetailVal");
+  const handDrawnOutlineField = $("#handDrawnOutlineField");
+  const handDrawnOutlineInput = $("#handDrawnOutline");
+  const handDrawnOutlineThresholdField = $("#handDrawnOutlineThresholdField");
+  const handDrawnOutlineThresholdInput = $("#handDrawnOutlineThreshold");
+  const handDrawnOutlineThresholdVal = $("#handDrawnOutlineThresholdVal");
+  const handDrawnOutlineBlurField = $("#handDrawnOutlineBlurField");
+  const handDrawnOutlineBlurInput = $("#handDrawnOutlineBlur");
   const focusRegionField = $("#focusRegionField");
   const focusRegionStatus = $("#focusRegionStatus");
   const drawFocusBtn = $("#drawFocusBtn");
@@ -197,6 +233,8 @@
   const suppressBackgroundInfoPopover = $("#suppressBackgroundInfoPopover");
   const handDrawnStyleInfoIcon = $("#handDrawnStyleInfoIcon");
   const handDrawnStyleInfoPopover = $("#handDrawnStyleInfoPopover");
+  const handDrawnOutlineInfoIcon = $("#handDrawnOutlineInfoIcon");
+  const handDrawnOutlineInfoPopover = $("#handDrawnOutlineInfoPopover");
   const resetBtn = $("#resetBtn");
   const output = $("#output");
   const emptyState = $("#emptyState");
@@ -349,7 +387,15 @@
     charsetField.style.display = renderMode === "ascii" && !handDrawnStyle ? "" : "none";
     paletteField.style.display = renderMode === "ascii" && !handDrawnStyle ? "" : "none";
     handDrawnStyleField.style.display = renderMode === "ascii" ? "" : "none";
-    handDrawnDetailField.style.display = renderMode === "ascii" && handDrawnStyle ? "" : "none";
+    // Simplify tones quantizes a continuous brightness target - meaningless
+    // once Trace outline first has already reduced the source to pure
+    // black-on-white, so it hides whenever that's active.
+    handDrawnDetailField.style.display = renderMode === "ascii" && handDrawnStyle && !handDrawnOutline ? "" : "none";
+    handDrawnOutlineField.style.display = renderMode === "ascii" && handDrawnStyle ? "" : "none";
+    handDrawnOutlineThresholdField.style.display =
+      renderMode === "ascii" && handDrawnStyle && handDrawnOutline ? "" : "none";
+    handDrawnOutlineBlurField.style.display =
+      renderMode === "ascii" && handDrawnStyle && handDrawnOutline ? "" : "none";
     adaptiveDetailField.style.display = (renderMode === "ascii" && !handDrawnStyle) || renderMode === "edges" ? "" : "none";
     focusRegionField.style.display =
       ((renderMode === "ascii" && !handDrawnStyle) || renderMode === "edges") && adaptiveDetail ? "" : "none";
@@ -537,6 +583,7 @@
 
   setupInfoPopover(suppressBackgroundInfoIcon, suppressBackgroundInfoPopover);
   setupInfoPopover(handDrawnStyleInfoIcon, handDrawnStyleInfoPopover);
+  setupInfoPopover(handDrawnOutlineInfoIcon, handDrawnOutlineInfoPopover);
 
   adaptiveDetailInput.addEventListener("change", function () {
     adaptiveDetail = this.checked;
@@ -580,6 +627,30 @@
     const v = parseInt(this.value, 10);
     if (v === handDrawnDetail) return;
     handDrawnDetail = v;
+    updateUrl();
+    render();
+  });
+
+  handDrawnOutlineInput.addEventListener("change", function () {
+    handDrawnOutline = this.checked;
+    applyRenderModeVisibility();
+    updateUrl();
+    render();
+  });
+
+  handDrawnOutlineThresholdInput.addEventListener("input", function () {
+    handDrawnOutlineThresholdVal.textContent = this.value;
+  });
+  handDrawnOutlineThresholdInput.addEventListener("change", function () {
+    const v = parseInt(this.value, 10);
+    if (v === handDrawnOutlineThreshold) return;
+    handDrawnOutlineThreshold = v;
+    updateUrl();
+    render();
+  });
+
+  handDrawnOutlineBlurInput.addEventListener("change", function () {
+    handDrawnOutlineBlur = this.checked;
     updateUrl();
     render();
   });
@@ -781,6 +852,13 @@
     handDrawnDetail = DEFAULTS.handDrawnDetail;
     handDrawnDetailInput.value = handDrawnDetail;
     handDrawnDetailVal.textContent = "off";
+    handDrawnOutline = DEFAULTS.handDrawnOutline;
+    handDrawnOutlineInput.checked = handDrawnOutline;
+    handDrawnOutlineThreshold = DEFAULTS.handDrawnOutlineThreshold;
+    handDrawnOutlineThresholdInput.value = handDrawnOutlineThreshold;
+    handDrawnOutlineThresholdVal.textContent = handDrawnOutlineThreshold;
+    handDrawnOutlineBlur = DEFAULTS.handDrawnOutlineBlur;
+    handDrawnOutlineBlurInput.checked = handDrawnOutlineBlur;
     focusRegion = null;
     cancelFocusDrawing();
     updateFocusOverlay();
@@ -1018,11 +1096,20 @@
   // = one sampled pixel, so the source image is drawn scaled directly down
   // to the character grid's resolution and the browser's own image
   // downscaling does the per-cell brightness averaging for us.
-  function prepareCharacterGrid() {
+  // The character grid's own column/row count - cheap to compute (no
+  // canvas render needed), so callers that only need the dimensions (not
+  // rendered pixels - see computeHandDrawnAsciiLines's outline branch)
+  // can skip prepareCharacterGrid()'s render pass entirely.
+  function characterGridSize() {
     const height = lockAspect
       ? Math.max(1, Math.round(asciiWidth * (image.height / image.width) * asciiCharAspect))
       : manualHeight;
-    canvas.width = asciiWidth;
+    return { width: asciiWidth, height };
+  }
+
+  function prepareCharacterGrid() {
+    const { width, height } = characterGridSize();
+    canvas.width = width;
     canvas.height = height;
 
     context.globalCompositeOperation = "source-over";
@@ -1164,6 +1251,58 @@
     return patches;
   }
 
+  // "Trace outline first": extracts a binary (0/1) black-outline edge map
+  // at the same full pixel resolution computeHandDrawnPatches samples at,
+  // then slices it into per-cell patches the same shape/size as the
+  // regular ink-density ones - so the exact same matchGlyph/atlas
+  // machinery can compare a cell's outline shape against candidate
+  // glyphs, just fed a different source. Reuses edgeChar purely as an
+  // "is this pixel's gradient magnitude above threshold" test (the
+  // returned direction character is discarded) rather than duplicating
+  // its magnitude-normalization math.
+  function computeHandDrawnOutlinePatches(gridWidth, gridHeight, cellWidth, cellHeight) {
+    const fullWidth = gridWidth * cellWidth;
+    const fullHeight = gridHeight * cellHeight;
+    canvas.width = fullWidth;
+    canvas.height = fullHeight;
+
+    context.globalCompositeOperation = "source-over";
+    context.fillStyle = "white";
+    context.fillRect(0, 0, fullWidth, fullHeight);
+
+    context.globalCompositeOperation = "luminosity";
+    context.imageSmoothingEnabled = true;
+    if ("imageSmoothingQuality" in context) context.imageSmoothingQuality = "high";
+    context.drawImage(image, 0, 0, fullWidth, fullHeight);
+
+    const imageData = context.getImageData(0, 0, fullWidth, fullHeight);
+    applyLevels(imageData.data, fullWidth, fullHeight);
+
+    const source = handDrawnOutlineBlur ? boxBlurLuminance(imageData.data, fullWidth, fullHeight) : imageData.data;
+
+    const edgeBinary = new Float64Array(fullWidth * fullHeight);
+    for (let y = 0; y < fullHeight; y++) {
+      for (let x = 0; x < fullWidth; x++) {
+        const { dx, dy } = sobelGradient(source, x, y, fullWidth, fullHeight);
+        edgeBinary[y * fullWidth + x] = edgeChar(dx, dy, handDrawnOutlineThreshold) === " " ? 0 : 1;
+      }
+    }
+
+    const patches = new Array(gridWidth * gridHeight);
+    for (let cy = 0; cy < gridHeight; cy++) {
+      for (let cx = 0; cx < gridWidth; cx++) {
+        const patch = new Array(cellWidth * cellHeight);
+        for (let py = 0; py < cellHeight; py++) {
+          for (let px = 0; px < cellWidth; px++) {
+            patch[py * cellWidth + px] = edgeBinary[(cy * cellHeight + py) * fullWidth + (cx * cellWidth + px)];
+          }
+        }
+        patches[cy * gridWidth + cx] = patch;
+      }
+    }
+    return patches;
+  }
+
   // How much lower the shape-matching weight drops in a "busy" cell (see
   // adaptiveDetailThreshold below) versus a normal one. Confirmed by
   // testing against a real high-texture photo: at a high, uniform
@@ -1177,11 +1316,44 @@
   const handDrawnStructureWeight = 0.75;
   const handDrawnBusyStructureWeight = 0.15;
 
+  // Fixed, near-maximum structure weight for "Trace outline first" - the
+  // patch itself IS a shape (0/1 outline), not a continuous tone, so there
+  // is no meaningful brightness fallback to blend toward and no busy-cell
+  // gating decision to make; validated empirically (see JOURNEY.md)
+  // against real photos rather than assumed.
+  const handDrawnOutlineStructureWeight = 0.95;
+
   function computeHandDrawnAsciiLines() {
+    if (handDrawnOutline) {
+      // Only the grid's dimensions are needed here, not rendered pixels -
+      // computeHandDrawnOutlinePatches does its own full-resolution render
+      // at the fine cellWidth/cellHeight scale, so calling
+      // prepareCharacterGrid() too would render the whole image twice for
+      // no reason (its own low-res render is only there to feed
+      // computeComplexityMap, which the outline path doesn't use).
+      const { width, height } = characterGridSize();
+      const { cellWidth, cellHeight } = handDrawnGlyphCellFor(width, height);
+      const atlas = getHandDrawnGlyphAtlas(cellWidth, cellHeight);
+      const outlinePatches = computeHandDrawnOutlinePatches(width, height, cellWidth, cellHeight);
+      const lines = [];
+      for (let y = 0; y < height; y++) {
+        let line = "";
+        for (let x = 0; x < width; x++) {
+          if (isBackgroundPixel(x, y, width, height)) {
+            line += " ";
+            continue;
+          }
+          line += matchGlyph(outlinePatches[y * width + x], atlas, handDrawnOutlineStructureWeight).char;
+        }
+        lines.push(line);
+      }
+      return lines;
+    }
+
     const { data, width, height } = prepareCharacterGrid();
-    const complexity = computeComplexityMap(data, width, height, adaptiveDetailWindowRadius);
     const { cellWidth, cellHeight } = handDrawnGlyphCellFor(width, height);
     const atlas = getHandDrawnGlyphAtlas(cellWidth, cellHeight);
+    const complexity = computeComplexityMap(data, width, height, adaptiveDetailWindowRadius);
     const patches = computeHandDrawnPatches(width, height, cellWidth, cellHeight);
 
     // "Simplify tones": handDrawnDetail's slider max (32) is the explicit
@@ -1573,6 +1745,13 @@
     }
     if (handDrawnStyle) params.set("handdrawn", "1");
     if (handDrawnStyle && handDrawnDetail !== DEFAULTS.handDrawnDetail) params.set("simplify", handDrawnDetail);
+    if (handDrawnStyle && handDrawnOutline) {
+      params.set("outline", "1");
+      if (handDrawnOutlineThreshold !== DEFAULTS.handDrawnOutlineThreshold) {
+        params.set("outlineThreshold", handDrawnOutlineThreshold);
+      }
+      if (handDrawnOutlineBlur) params.set("outlineBlur", "1");
+    }
 
     const query = params.toString();
     history.replaceState(null, "", query ? `?${query}` : location.pathname);
@@ -1703,6 +1882,24 @@
         handDrawnDetail = simplifyParam;
         handDrawnDetailInput.value = handDrawnDetail;
         handDrawnDetailVal.textContent = handDrawnDetail >= 32 ? "off" : `${handDrawnDetail} levels`;
+      }
+
+      if (params.get("outline") === "1") {
+        handDrawnOutline = true;
+        handDrawnOutlineInput.checked = true;
+        applyRenderModeVisibility();
+
+        const outlineThresholdParam = parseInt(params.get("outlineThreshold"), 10);
+        if (Number.isFinite(outlineThresholdParam) && outlineThresholdParam >= 0 && outlineThresholdParam <= 254) {
+          handDrawnOutlineThreshold = outlineThresholdParam;
+          handDrawnOutlineThresholdInput.value = handDrawnOutlineThreshold;
+          handDrawnOutlineThresholdVal.textContent = handDrawnOutlineThreshold;
+        }
+
+        if (params.get("outlineBlur") === "1") {
+          handDrawnOutlineBlur = true;
+          handDrawnOutlineBlurInput.checked = true;
+        }
       }
     }
   }

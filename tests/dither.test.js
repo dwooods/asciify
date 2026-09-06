@@ -9,6 +9,7 @@ const {
   luminanceToChar,
   sobelGradient,
   edgeChar,
+  boxBlurLuminance,
   computeComplexityMap,
   buildGlyphAtlas,
   matchGlyph,
@@ -190,6 +191,50 @@ test("edgeChar returns a space when the gradient is weaker than the threshold", 
   // dx=5, dy=5 normalizes to a magnitude of ~1.25 (see sobelMaxMagnitude);
   // a threshold above that should suppress it to a blank cell.
   assert.equal(edgeChar(5, 5, 2.0), " ");
+});
+
+test("boxBlurLuminance leaves a perfectly flat image unchanged", () => {
+  const img = makeImage(5, 5, () => 128);
+  const blurred = boxBlurLuminance(img, 5, 5);
+  for (let i = 0; i < blurred.length; i++) assert.equal(blurred[i], i % 4 === 3 ? 255 : 128);
+});
+
+test("boxBlurLuminance averages a single bright pixel into its dark neighborhood", () => {
+  // A lone 255 pixel in an otherwise-black 5x5 image: its 3x3 neighborhood
+  // (itself is a corner-adjacent interior pixel, full 9-pixel window) should
+  // average down to 255/9 - well below the original spike, proving actual
+  // smoothing happened rather than a no-op.
+  const img = makeImage(5, 5, (x, y) => (x === 2 && y === 2 ? 255 : 0));
+  const blurred = boxBlurLuminance(img, 5, 5);
+  const centerValue = blurred[rgbaOffset(2, 2, 5)];
+  assert.ok(centerValue > 0 && centerValue < 255, `expected the spike smoothed, got ${centerValue}`);
+  assert.equal(Math.round(centerValue), Math.round(255 / 9));
+});
+
+test("boxBlurLuminance clamps its averaging window at image edges instead of reading out of bounds", () => {
+  // A bright pixel in the top-left CORNER only has a 2x2 (4-pixel) window
+  // available, not the full 9 - averaging over just those should give a
+  // stronger (not weaker) result than the interior case above.
+  const img = makeImage(5, 5, (x, y) => (x === 0 && y === 0 ? 255 : 0));
+  const blurred = boxBlurLuminance(img, 5, 5);
+  const cornerValue = blurred[rgbaOffset(0, 0, 5)];
+  assert.equal(Math.round(cornerValue), Math.round(255 / 4));
+});
+
+test("boxBlurLuminance writes an opaque, greyscale (R=G=B) buffer usable directly as sobelGradient input", () => {
+  const img = makeImage(4, 4, (x, y) => (x + y) * 20);
+  const blurred = boxBlurLuminance(img, 4, 4);
+  for (let y = 0; y < 4; y++) {
+    for (let x = 0; x < 4; x++) {
+      const o = rgbaOffset(x, y, 4);
+      assert.equal(blurred[o], blurred[o + 1]);
+      assert.equal(blurred[o + 1], blurred[o + 2]);
+      assert.equal(blurred[o + 3], 255);
+    }
+  }
+  // Should be usable as sobelGradient's input without throwing or NaN-ing.
+  const { dx, dy } = sobelGradient(blurred, 2, 2, 4, 4);
+  assert.ok(Number.isFinite(dx) && Number.isFinite(dy));
 });
 
 test("computeComplexityMap reports near-zero complexity for a flat image", () => {

@@ -1286,3 +1286,89 @@ weren't the answer - but "simplify first" turned out to name a mechanism
 (spatial consolidation) genuinely outside that set, and reopening on a
 specific, testable new idea rather than a vague "try harder" is what
 made it worth the hour rather than a repeat of the same five results.
+
+## Phase 14: "Trace outline first" - the actual academic pipeline, finally tried
+
+The user proposed a third reopening, even more specific than Phase 13's:
+generate a black-outline version of the photo first, then match
+characters against *that* instead of the raw image - and asked directly
+whether that needs an image-generation model. It doesn't, and saying so
+plainly mattered: outline/edge extraction is the same deterministic pixel
+math this project's own Edges mode already does (Sobel gradients), not
+generative AI. More importantly, this is *literally* the real academic
+pipeline Phase 11's addendum already found and didn't act on: Xu et al.
+2010 vectorizes a line drawing first, then matches characters to that -
+every attempt in Phases 10-13, including the otherwise-successful
+"Simplify tones," still matched characters against raw continuous-tone
+pixels. This was the one big structural piece nobody had actually tried.
+
+**Prototyped it, and it worked better than anything else this
+investigation produced.** Extracted a binary (pure black/white) edge map
+via the existing `sobelGradient`, thresholded, then fed THOSE binary
+patches into the unchanged `matchGlyph`/NCC machinery instead of
+ink-density patches. At threshold 0.15 (normalized), the tiger's ears,
+eyes, and muzzle became clearly recognizable for the first time in five
+prior attempts - not "more coherent than before," genuinely readable as
+a tiger face. The mechanism is exactly why: a binary source has no
+continuous brightness to collapse, so Phase 10's root cause (the
+charset's clustered dark-tail ceiling) simply doesn't apply to it.
+
+**Real trade-offs, tested rather than assumed away:**
+- A higher threshold (0.25) cleaned up the truck's edge noise but lost
+  most of the tiger's structure - fur/contour edges are inherently
+  lower-contrast than the truck's crisp painted panel lines, so any
+  single threshold that suppresses one suppresses the other.
+- Blurring before edge detection (the standard noise-reduction pre-step
+  real edge detectors like Canny use) meaningfully cleaned up the
+  truck's JPEG/surface-texture noise, but softened the tiger's fur edges
+  enough to lose some of the facial clarity the unblurred version had.
+
+Two real, independently-useful dials, not one setting to tune once -
+the same shape of trade-off "Simplify tones" already established a
+pattern for, so both shipped as opt-in controls rather than a forced
+default, decided with the user rather than picked silently.
+
+**What shipped**, all under a new "Trace outline first" checkbox nested
+in Hand-drawn style (hides Simplify tones while active - a continuous
+brightness target has nothing to quantize once the source is already
+binary):
+- `boxBlurLuminance(data, width, height)` in `dither.js` - a plain,
+  tested 3x3 box blur, edge-clamped, returned as a drop-in RGBA-shaped
+  buffer so it composes directly with the existing `sobelGradient`.
+- `computeHandDrawnOutlinePatches()` in `script.js` - mirrors
+  `computeHandDrawnPatches()`'s structure but slices a thresholded
+  binary edge map into patches instead of ink density. Reuses `edgeChar`
+  purely as an "is this pixel's gradient above threshold" test (discards
+  the direction character it returns) rather than duplicating its
+  magnitude-normalization math - one second-order benefit of that reuse:
+  the new "Edge threshold" slider sits on the exact same 0-254 scale as
+  the existing braille/edges Threshold control, for free.
+- A fixed, near-maximum structure weight (0.95) when outline mode is
+  active - there's no meaningful brightness fallback to blend toward
+  once the patch itself already is a shape, and no busy-cell gating
+  decision left to make (confirmed empirically, not assumed).
+- "Reduce noise" checkbox (off by default - the unblurred setting gave
+  the single best tiger result of the whole investigation) applies
+  `boxBlurLuminance` before the Sobel pass.
+
+**Where this leaves the tiger case, genuinely revised from Phase 12's
+close-out**: this is not another partial, honestly-limited improvement -
+it is a real, working fix for legibility on the hardest case this
+project has tested, arrived at by finally building the actual technique
+the academic literature uses instead of a simplification of it. The
+underlying character-set ceiling from Phases 10-12 is still real, and
+"Trace outline first" trades photorealistic tone for structural
+legibility rather than delivering both - but "the tiger's face is
+recognizable" is a materially different and better outcome than every
+prior phase reached.
+
+**Lesson worth keeping, on top of Phase 13's**: two "reopenings" of a
+"closed" investigation in a row each found something real, because each
+named a mechanism (spatial consolidation, then outline-first matching)
+that hadn't actually been tried - not a re-ask of "can you try harder."
+The second reopening in particular succeeded specifically because it
+matched the technique degree-for-degree with a source the project had
+*already read* (Phase 11's Xu 2010 addendum) but not yet acted on -
+sometimes the fix was already sitting in the project's own research
+notes, just not yet connected to the room where the source image gets
+touched.

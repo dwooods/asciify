@@ -131,6 +131,42 @@
     return "/";
   }
 
+  // A light 3x3 box blur over a greyscale RGBA buffer, returned as a new
+  // same-shaped buffer (all three color channels set to the blurred value,
+  // alpha opaque) so it's a drop-in replacement anywhere the original
+  // buffer was used - in particular, as sobelGradient's own input. This is
+  // the standard noise-reduction pre-step real edge detectors (Canny and
+  // friends) apply before computing a gradient: raw Sobel reacts to a
+  // single noisy/compressed pixel exactly as readily as to a genuine
+  // edge, and blurring first suppresses the former far more than the
+  // latter (see Hand-drawn style's "Reduce noise" option in script.js,
+  // and JOURNEY.md for the real photo this was calibrated against).
+  function boxBlurLuminance(data, width, height) {
+    const out = new Uint8ClampedArray(data.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let sum = 0;
+        let count = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const sx = x + dx;
+            const sy = y + dy;
+            if (sx < 0 || sx >= width || sy < 0 || sy >= height) continue;
+            sum += data[rgbaOffset(sx, sy, width)];
+            count++;
+          }
+        }
+        const v = sum / count;
+        const o = rgbaOffset(x, y, width);
+        out[o] = v;
+        out[o + 1] = v;
+        out[o + 2] = v;
+        out[o + 3] = 255;
+      }
+    }
+    return out;
+  }
+
   // --- Adaptive detail (ASCII mode) -----------------------------------
   // A per-pixel "complexity" score - a 0-1 blend of local edge density and
   // local brightness contrast - used to render busy regions with the full
@@ -581,6 +617,7 @@
     luminanceToChar,
     sobelGradient,
     edgeChar,
+    boxBlurLuminance,
     computeComplexityMap,
     buildGlyphAtlas,
     matchGlyph,
