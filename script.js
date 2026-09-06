@@ -21,7 +21,7 @@
     edgeChar,
     nonMaxSuppress,
     hysteresisThreshold,
-    boxBlurLuminance,
+    bilateralBlurLuminance,
     computeComplexityMap,
     buildGlyphAtlas,
     matchGlyph,
@@ -1299,7 +1299,7 @@
     const imageData = context.getImageData(0, 0, fullWidth, fullHeight);
     applyLevels(imageData.data, fullWidth, fullHeight);
 
-    const source = handDrawnOutlineBlur ? boxBlurLuminance(imageData.data, fullWidth, fullHeight) : imageData.data;
+    const source = handDrawnOutlineBlur ? bilateralBlurLuminance(imageData.data, fullWidth, fullHeight) : imageData.data;
 
     const magnitudes = new Float64Array(fullWidth * fullHeight);
     const angles = new Float64Array(fullWidth * fullHeight);

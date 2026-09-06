@@ -13,7 +13,7 @@ const {
   edgeChar,
   nonMaxSuppress,
   hysteresisThreshold,
-  boxBlurLuminance,
+  bilateralBlurLuminance,
   computeComplexityMap,
   buildGlyphAtlas,
   matchGlyph,
@@ -248,47 +248,56 @@ test("hysteresisThreshold keeps strong edges and weak edges connected to them, d
   assert.equal(Array.from(out).reduce((a, b) => a + b, 0), 3, "no other pixel should be marked as an edge");
 });
 
-test("boxBlurLuminance leaves a perfectly flat image unchanged", () => {
-  const img = makeImage(5, 5, () => 128);
-  const blurred = boxBlurLuminance(img, 5, 5);
+test("bilateralBlurLuminance leaves a perfectly flat image unchanged", () => {
+  const img = makeImage(9, 9, () => 128);
+  const blurred = bilateralBlurLuminance(img, 9, 9);
   for (let i = 0; i < blurred.length; i++) assert.equal(blurred[i], i % 4 === 3 ? 255 : 128);
 });
 
-test("boxBlurLuminance averages a single bright pixel into its dark neighborhood", () => {
-  // A lone 255 pixel in an otherwise-black 5x5 image: its 3x3 neighborhood
-  // (itself is a corner-adjacent interior pixel, full 9-pixel window) should
-  // average down to 255/9 - well below the original spike, proving actual
-  // smoothing happened rather than a no-op.
-  const img = makeImage(5, 5, (x, y) => (x === 2 && y === 2 ? 255 : 0));
-  const blurred = boxBlurLuminance(img, 5, 5);
-  const centerValue = blurred[rgbaOffset(2, 2, 5)];
-  assert.ok(centerValue > 0 && centerValue < 255, `expected the spike smoothed, got ${centerValue}`);
-  assert.equal(Math.round(centerValue), Math.round(255 / 9));
+test("bilateralBlurLuminance smooths a small, noise-scale brightness difference like an ordinary blur", () => {
+  // A lone pixel only 30 brighter than its flat neighborhood - well within
+  // sigmaRange (30's default), so this should behave like plain smoothing:
+  // pulled toward the neighborhood average, not left untouched.
+  const img = makeImage(9, 9, (x, y) => (x === 4 && y === 4 ? 130 : 100));
+  const blurred = bilateralBlurLuminance(img, 9, 9);
+  const centerValue = blurred[rgbaOffset(4, 4, 9)];
+  assert.ok(centerValue > 100 && centerValue < 130, `expected the speck smoothed toward its neighborhood, got ${centerValue}`);
 });
 
-test("boxBlurLuminance clamps its averaging window at image edges instead of reading out of bounds", () => {
-  // A bright pixel in the top-left CORNER only has a 2x2 (4-pixel) window
-  // available, not the full 9 - averaging over just those should give a
-  // stronger (not weaker) result than the interior case above.
-  const img = makeImage(5, 5, (x, y) => (x === 0 && y === 0 ? 255 : 0));
-  const blurred = boxBlurLuminance(img, 5, 5);
-  const cornerValue = blurred[rgbaOffset(0, 0, 5)];
-  assert.equal(Math.round(cornerValue), Math.round(255 / 4));
+test("bilateralBlurLuminance preserves a real high-contrast edge instead of softening it like a box blur would", () => {
+  // A hard vertical edge (left half black, right half white). A pixel right
+  // on the boundary has neighbors on BOTH sides within its averaging
+  // window - a box blur would mix them in proportionally, visibly
+  // softening the edge (this is the exact tiger-photo facial-detail loss
+  // documented in JOURNEY.md). A bilateral filter's range weight should
+  // suppress the far-side (very different brightness) neighbors almost
+  // entirely, keeping the boundary pixel close to its own original value.
+  const img = makeImage(9, 9, (x) => (x < 4 ? 0 : 255));
+  const blurred = bilateralBlurLuminance(img, 9, 9);
+  const boundaryValue = blurred[rgbaOffset(3, 4, 9)];
+  assert.ok(boundaryValue < 10, `expected the edge preserved close to its original 0, got ${boundaryValue}`);
 });
 
-test("boxBlurLuminance writes an opaque, greyscale (R=G=B) buffer usable directly as sobelGradient input", () => {
-  const img = makeImage(4, 4, (x, y) => (x + y) * 20);
-  const blurred = boxBlurLuminance(img, 4, 4);
-  for (let y = 0; y < 4; y++) {
-    for (let x = 0; x < 4; x++) {
-      const o = rgbaOffset(x, y, 4);
+test("bilateralBlurLuminance clamps its averaging window at image edges instead of reading out of bounds", () => {
+  const img = makeImage(9, 9, (x, y) => (x === 0 && y === 0 ? 200 : 100));
+  const blurred = bilateralBlurLuminance(img, 9, 9);
+  const cornerValue = blurred[rgbaOffset(0, 0, 9)];
+  assert.ok(Number.isFinite(cornerValue), "clamped sampling at the corner should not read out of bounds or NaN");
+});
+
+test("bilateralBlurLuminance writes an opaque, greyscale (R=G=B) buffer usable directly as sobelGradient input", () => {
+  const img = makeImage(9, 9, (x, y) => (x + y) * 20);
+  const blurred = bilateralBlurLuminance(img, 9, 9);
+  for (let y = 0; y < 9; y++) {
+    for (let x = 0; x < 9; x++) {
+      const o = rgbaOffset(x, y, 9);
       assert.equal(blurred[o], blurred[o + 1]);
       assert.equal(blurred[o + 1], blurred[o + 2]);
       assert.equal(blurred[o + 3], 255);
     }
   }
   // Should be usable as sobelGradient's input without throwing or NaN-ing.
-  const { dx, dy } = sobelGradient(blurred, 2, 2, 4, 4);
+  const { dx, dy } = sobelGradient(blurred, 4, 4, 9, 9);
   assert.ok(Number.isFinite(dx) && Number.isFinite(dy));
 });
 

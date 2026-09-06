@@ -1462,3 +1462,69 @@ declined; the underlying algorithmic idea (NMS + hysteresis are real,
 well-understood techniques, not this project's own invention) was
 tested the same way every other idea in this investigation was, and this
 time it earned its place with a clean, unconditional win.
+
+## Phase 16: Bilateral filter replaces box blur - a real trade-off, decided rather than assumed
+
+More outside feedback after Phase 15 (a second unsolicited write-up)
+named one more real gap: "Reduce noise" was still a plain 3x3 box blur,
+which can't tell a genuine edge from texture noise apart from raw
+spatial proximity - it softens both equally. That's exactly what Phase
+14 already found and documented as a cost: blurring "cleaned up the
+truck's JPEG/surface-texture noise, but softened the tiger's fur edges
+enough to lose some of the facial clarity." A bilateral filter's whole
+premise is the fix for that specific problem - weight each neighbor by
+BOTH spatial distance and how close its brightness is to the center
+pixel's, so a same-side (texture) neighbor still gets smoothed while a
+far-side (real edge) neighbor barely counts.
+
+**Prototyped it the same way as Phase 15**: box blur, bilateral filter
+(radius 2, sigmaSpatial 1.5, sigmaRange 30), and no blur at all (the
+actual shipped default), each followed by the real Sobel → NMS →
+hysteresis pipeline, across the same 5 test photos:
+
+| image | no blur fg/specks | box blur fg/specks | bilateral fg/specks |
+|---|---|---|---|
+| tiger | 76,046 / 7 | 38,793 / 0 | 46,472 / 0 |
+| truck | 43,569 / 48 | 42,759 / 12 | 43,112 / 50 |
+| dog | 15,797 / 0 | 15,929 / 0 | 15,663 / 0 |
+| portrait | 2,593 / 0 | 2,111 / 0 | 2,584 / 0 |
+| busy desk | 30,066 / 3 | 26,436 / 0 | 28,074 / 2 |
+
+**A genuinely different result shape than Phase 15's clean sweep.** On
+the tiger - the actual reason "Reduce noise" exists - bilateral visibly
+preserved the eyes, muzzle, and ear structure that box blur softened
+away, while still cutting background/texture noise by almost as much
+(46,472 vs 38,793, both down from 76,046 unblurred). But on the other
+four images, box blur was consistently the more aggressive noise
+cleaner; bilateral landed between "no blur" and "box blur" rather than
+beating both. Screenshots of the truck and busy-desk cases, though,
+showed this numeric gap was visually negligible - the renders were
+close to indistinguishable - while the tiger's improvement was
+substantial and immediately visible.
+
+**Flagged rather than decided silently**, since this was a real
+trade-off (unlike Phase 15's unconditional win): asked whether to
+replace box blur outright, offer both as a choice, or leave it. Chose
+to replace it outright - the tiger case is the one this option was
+actually built for and names in its own tooltip ("Can make a
+heavily-textured photo far more recognizable"), the losses elsewhere
+were visually negligible even though numerically real, and a second
+blur-method selector would be UI complexity for a difference nobody
+would likely notice in practice.
+
+**What shipped**: `bilateralBlurLuminance(data, width, height, radius,
+sigmaSpatial, sigmaRange)` in `dither.js` replaces `boxBlurLuminance`
+outright (deleted, not deprecated - it had exactly one caller and that
+caller now uses the new function) with defaults matching the validated
+comparison above. Same call site, same "Reduce noise" checkbox, same
+permalink parameter - purely an internal algorithm swap.
+
+**Lesson, continuing Phase 15's**: not every piece of outside advice
+resolves the same way. Phase 15's suggestion (NMS + hysteresis) tested
+out as a clean, unconditional win and shipped silently as an upgrade.
+This one tested out as a genuine trade-off - better on the one case
+that actually matters for this feature, mildly worse on four others -
+and got a real decision rather than an assumption in either direction:
+neither "sounds like a good idea, ship it" nor "it has some regression,
+skip it," but actually looking at what the regression cost in practice
+before choosing.

@@ -225,22 +225,47 @@
   // edge, and blurring first suppresses the former far more than the
   // latter (see Hand-drawn style's "Reduce noise" option in script.js,
   // and JOURNEY.md for the real photo this was calibrated against).
-  function boxBlurLuminance(data, width, height) {
+  // Like a box blur, but each neighbor's contribution is weighted by BOTH
+  // its spatial distance (a Gaussian on pixel offset, sigmaSpatial) AND how
+  // close its brightness is to the center pixel's (a Gaussian on
+  // brightness difference, sigmaRange) - so a spatially-near neighbor with
+  // very different brightness (a real edge) barely counts toward the
+  // average, while a similar-brightness neighbor (texture noise) still
+  // gets smoothed away normally. A box blur can't make that distinction:
+  // it softens real structure and texture noise equally. On the tiger
+  // photo that cost real facial detail even while it cleaned up fur
+  // texture (see JOURNEY.md); a bilateral filter targets the texture
+  // "Reduce noise" is meant to remove without softening the structure
+  // "Trace outline first" is trying to preserve. Default radius/sigmas
+  // are the values that validated best against this project's real test
+  // photos, not arbitrary - see JOURNEY.md for the comparison.
+  function bilateralBlurLuminance(data, width, height, radius = 2, sigmaSpatial = 1.5, sigmaRange = 30) {
+    const spatialWeights = [];
+    for (let dy = -radius; dy <= radius; dy++) {
+      const row = [];
+      for (let dx = -radius; dx <= radius; dx++) {
+        row.push(Math.exp(-(dx * dx + dy * dy) / (2 * sigmaSpatial * sigmaSpatial)));
+      }
+      spatialWeights.push(row);
+    }
     const out = new Uint8ClampedArray(data.length);
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
+        const centerValue = data[rgbaOffset(x, y, width)];
         let sum = 0;
-        let count = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const sx = x + dx;
-            const sy = y + dy;
-            if (sx < 0 || sx >= width || sy < 0 || sy >= height) continue;
-            sum += data[rgbaOffset(sx, sy, width)];
-            count++;
+        let weightSum = 0;
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            const sx = Math.min(width - 1, Math.max(0, x + dx));
+            const sy = Math.min(height - 1, Math.max(0, y + dy));
+            const value = data[rgbaOffset(sx, sy, width)];
+            const rangeDiff = value - centerValue;
+            const weight = spatialWeights[dy + radius][dx + radius] * Math.exp(-(rangeDiff * rangeDiff) / (2 * sigmaRange * sigmaRange));
+            sum += value * weight;
+            weightSum += weight;
           }
         }
-        const v = sum / count;
+        const v = sum / weightSum;
         const o = rgbaOffset(x, y, width);
         out[o] = v;
         out[o + 1] = v;
@@ -705,7 +730,7 @@
     edgeChar,
     nonMaxSuppress,
     hysteresisThreshold,
-    boxBlurLuminance,
+    bilateralBlurLuminance,
     computeComplexityMap,
     buildGlyphAtlas,
     matchGlyph,
