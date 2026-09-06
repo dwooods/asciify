@@ -1061,3 +1061,89 @@ admitting the same ceiling. Worth remembering the plain lesson here: when
 a primary source is finally reachable, it doesn't just answer the
 question that sent you looking for it - it can tell you the question
 itself was aimed at the wrong pipeline.
+
+## Phase 11: The real 2015 paper, a fourth attempt, and the fix that was never going to work
+
+Getting the 2015 follow-up paper (Xu, Zhong, Xie, Qin, Chen, Jin, Wong,
+Han, "Texture-Aware ASCII Art Synthesis with Proportional Fonts", NPAR/
+Expressive 2015) took two more tries - a 101 MB "save whole page" export
+was too large to upload, and a second upload turned out to be the same
+2010 paper again by mistake - before the actual PDF came through. It was
+worth the wait: unlike the 2010 paper, this one operates directly on
+real photographs (not pre-vectorized line art), which is exactly the
+problem Hand-drawn style is trying to solve.
+
+**An independent, academic confirmation of the exact failure this project
+found empirically.** The paper's own user study (Table 1) scores the
+2010 method - fixed-width character matching, architecturally close to
+what Hand-drawn style does - on real photos: 6.26/6.12/5.86
+(similarity/recognition/aesthetics) vs. **8.72/8.61/8.46** for their new
+method, which slightly *exceeds* the human-artist baseline (8.63) on
+photos specifically. Their own stated reason: *"the fixed-width font
+cannot well represent a variety of structures in natural images."* That
+is a controlled, academic reproduction of the tiger's exact failure mode,
+arrived at independently of anything tried here.
+
+**The actual fix has two parts, and only one is usable here.** (1) A
+dynamic-programming-optimized *proportional font* placement - solving
+character width and position jointly rather than a fixed grid. Real
+contributor to their result, but structurally inapplicable: asciify's
+entire premise is monospace output that pastes into any plain-text
+surface, so adopting proportional fonts isn't an option to chase, just a
+ceiling to know about. (2) *Multi-orientation phase congruency that keeps
+a vector, not a sum*: standard phase congruency (and, for that matter,
+the earlier non-CRF attempt) collapses edge energy across all
+orientations into one scalar, which over-emphasizes isotropic texture -
+many orientations each contributing a little can sum to a lot. Their fix
+keeps six separate per-orientation energy values; a real contour
+concentrates energy in one orientation, while texture spreads it evenly
+across all six.
+
+**Attempt 4: orientation-dominance gating.** Implemented a good-faith,
+disclosed simplification of part (2) - a bank of six oriented Gabor
+magnitude filters (spatial-domain, single scale, standing in for the
+paper's actual multi-scale log-Gabor phase-congruency computation, which
+needs FFT machinery this prototype doesn't have) - and used each cell's
+"dominance" (top orientation's share of total energy, vs. the 1/6
+isotropic baseline) as a replacement busy-cell gate, same architecture as
+the non-CRF attempt but with an orientation-aware signal instead of an
+isotropic one.
+
+Verified the discriminator actually worked before judging the result:
+median dominance on the tiger was 0.213 against a 0.167 isotropic
+baseline, and 95% of cells were correctly classified as "not real
+structure" (texture, not contour) - a working signal, not a bug. Yet the
+rendered tiger was still an illegible wall, structurally the same result
+as every earlier attempt. Truck.jpg (the known-good case) still rendered
+cleanly, confirming no regression - the gate itself is sound.
+
+**Why this negative result was actually predictable, and a lesson about
+not re-testing an already-isolated variable.** Phase 10 had already run
+the one test that made this outcome foreseeable: pure brightness matching
+alone (`structureWeight = 0`, meaning the *gate's* value cannot possibly
+change the output) still rendered the tiger as an illegible wall. That
+result means the busy-cell gate - whatever signal drives it, however
+sophisticated - was never capable of fixing this image's failure, because
+the brightness term alone already fails independent of any gating
+decision. Non-CRF (Phase 10, attempt 1) and orientation-dominance
+(this phase) are two different, genuinely more sophisticated texture
+discriminators than a plain complexity threshold - and both were testing
+the same already-ruled-out variable (how the gate decides between
+structure and brightness weighting) rather than the actual bottleneck
+(the brightness term's own nearest-ink-density collapse at the charset's
+clustered dense end, found in Phase 10). The lesson: once a variable is
+shown not to matter (here, via the weight=0 test), that finding applies
+to the whole family of fixes that only act through that variable, not
+just the one version already tried - re-testing a fancier version of an
+already-eliminated mechanism costs real implementation and Gabor-filter
+compute time for a result the earlier isolation had already implied.
+
+**Where this leaves things.** Four attempts across two phases (non-CRF
+gating, rank-based brightness, charset curation, orientation-dominance
+gating) have now been tried and honestly falsified against the same real
+photo. The 2015 paper's own architecture succeeds specifically by
+combining phase congruency *with* proportional-font placement - and the
+proportional-font half is the one piece that doesn't transfer to a
+monospace-output tool. That is a legitimate, externally-validated reason
+this specific problem may not have a fix available within asciify's own
+constraints, rather than a fix nobody has found yet.
