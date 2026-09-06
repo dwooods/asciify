@@ -16,7 +16,11 @@
     asciiRampExtended,
     luminanceToChar,
     sobelGradient,
+    sobelMagnitude,
+    edgeAngle,
     edgeChar,
+    nonMaxSuppress,
+    hysteresisThreshold,
     boxBlurLuminance,
     computeComplexityMap,
     buildGlyphAtlas,
@@ -1251,15 +1255,32 @@
     return patches;
   }
 
+  // How much lower hysteresis's "weak but keep if connected to a strong
+  // edge" threshold is than the user-facing Edge threshold (which acts as
+  // the "strong" cutoff) - a 2:1 ratio is the conventional Canny starting
+  // point, and matched what real photos in this investigation actually
+  // needed (see JOURNEY.md). Kept internal rather than a second slider:
+  // testing found no case where thinning/connectivity needed independent
+  // tuning from the existing single threshold.
+  const outlineHysteresisLowRatio = 0.5;
+
   // "Trace outline first": extracts a binary (0/1) black-outline edge map
   // at the same full pixel resolution computeHandDrawnPatches samples at,
   // then slices it into per-cell patches the same shape/size as the
   // regular ink-density ones - so the exact same matchGlyph/atlas
   // machinery can compare a cell's outline shape against candidate
-  // glyphs, just fed a different source. Reuses edgeChar purely as an
-  // "is this pixel's gradient magnitude above threshold" test (the
-  // returned direction character is discarded) rather than duplicating
-  // its magnitude-normalization math.
+  // glyphs, just fed a different source. A raw Sobel-magnitude threshold
+  // (the first version of this feature) leaves edges several pixels wide
+  // and scatters isolated single-pixel specks across textured photos
+  // (fur, grain); non-maximum suppression thins every edge to a 1px
+  // ridge along its own gradient direction, and hysteresis then drops any
+  // ridge pixel that isn't connected to a genuinely strong edge -
+  // together the standard middle two stages of a Canny-style detector,
+  // reusing the same sobelGradient this app's Edges mode already uses.
+  // Verified against 5 real test photos (fur texture, a clean
+  // illustration, a photo silhouette, a low-edge portrait, a cluttered
+  // scene) to consistently thin and de-speckle without ever losing
+  // recognizable shape - see JOURNEY.md for the actual counts.
   function computeHandDrawnOutlinePatches(gridWidth, gridHeight, cellWidth, cellHeight) {
     const fullWidth = gridWidth * cellWidth;
     const fullHeight = gridHeight * cellHeight;
@@ -1280,13 +1301,24 @@
 
     const source = handDrawnOutlineBlur ? boxBlurLuminance(imageData.data, fullWidth, fullHeight) : imageData.data;
 
-    const edgeBinary = new Float64Array(fullWidth * fullHeight);
+    const magnitudes = new Float64Array(fullWidth * fullHeight);
+    const angles = new Float64Array(fullWidth * fullHeight);
     for (let y = 0; y < fullHeight; y++) {
       for (let x = 0; x < fullWidth; x++) {
         const { dx, dy } = sobelGradient(source, x, y, fullWidth, fullHeight);
-        edgeBinary[y * fullWidth + x] = edgeChar(dx, dy, handDrawnOutlineThreshold) === " " ? 0 : 1;
+        const i = y * fullWidth + x;
+        magnitudes[i] = sobelMagnitude(dx, dy);
+        angles[i] = edgeAngle(dx, dy);
       }
     }
+    const thinned = nonMaxSuppress(magnitudes, angles, fullWidth, fullHeight);
+    const edgeBinary = hysteresisThreshold(
+      thinned,
+      fullWidth,
+      fullHeight,
+      handDrawnOutlineThreshold,
+      handDrawnOutlineThreshold * outlineHysteresisLowRatio,
+    );
 
     const patches = new Array(gridWidth * gridHeight);
     for (let cy = 0; cy < gridHeight; cy++) {

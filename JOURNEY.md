@@ -1372,3 +1372,93 @@ matched the technique degree-for-degree with a source the project had
 sometimes the fix was already sitting in the project's own research
 notes, just not yet connected to the room where the source image gets
 touched.
+
+## Phase 15: Non-maximum suppression + hysteresis - the rest of Canny, and the first fix with no trade-off
+
+Prompted by outside feedback (a user-shared GLSL shader and a written
+description of a full Canny pipeline) pointing out that "Trace outline
+first"'s edge extraction was still just a single global magnitude
+threshold - the crudest possible version of edge detection, missing the
+two steps (thinning, connectivity-based pruning) that separate a raw
+Sobel response from an actual clean line drawing. Declined the specific
+suggestion to do this on the GPU via WebGL (see the PR discussion for
+why: it would make the edge math untestable under `node --test`, and the
+character-matching step needs the result back in JS anyway, so a GPU
+round-trip wouldn't even remove the CPU-side loop) - but the underlying
+algorithmic point stood on its own and was worth testing independent of
+how it was proposed.
+
+**What was actually missing**: a raw Sobel magnitude thresholded at one
+cutoff produces edges several pixels wide (every pixel near a boundary
+exceeds the threshold, not just the one truest edge pixel), and a single
+global threshold either lets isolated noise-driven pixels through or
+cuts off genuine low-contrast edges - there's no way to have both with
+one number. Non-maximum suppression (keep a pixel only if its magnitude
+is the local max along its own gradient direction, else suppress it)
+fixes the first problem. Hysteresis (keep strong edges outright; keep
+weak edges only if 8-connected, transitively, to a strong one) fixes the
+second.
+
+**Prototyped against five real images already used throughout this
+investigation** - the tiger (fur texture, the hardest case), the truck
+(clean illustration, the case every fur-texture fix has previously
+regressed), a dog photo (clear silhouette), a soft-lit portrait (sparse
+edges), and a cluttered desk photo (genuine, not noise-driven, visual
+density) - comparing foreground-pixel count and an objective "isolated
+speck" count (foreground pixels with zero foreground 8-neighbors) before
+and after:
+
+| image | baseline fg / specks | NMS+hysteresis fg / specks |
+|---|---|---|
+| tiger | 29,635 / 195 | 26,274 / **0** |
+| truck | 110,331 / 8 | 42,551 / 8 |
+| dog | 50,180 / 0 | 15,929 / 0 |
+| portrait | 4,726 / 2 | 2,078 / **0** |
+| busy desk | 29,294 / 25 | 20,265 / **0** |
+
+Isolated specks dropped to exactly zero everywhere they existed (hysteresis
+doing precisely what it's supposed to), and thinning cut raw foreground
+pixel counts by roughly 30-65% by collapsing multi-pixel-wide edges down
+to single-pixel ridges - confirmed visually as thinner, crisper lines
+rather than lost detail (most visible on the truck, whose thick doubled
+strokes became clean single-line panel edges). Recognizability held on
+every single image; nothing regressed.
+
+**This is the first idea in this whole investigation (Phases 10-14) that
+didn't trade one image for another.** Every previous fix either helped
+the tiger and hurt the truck, or helped neither. NMS + hysteresis
+improved edge quality in the same direction on all five test images,
+including the two that have anchored every prior trade-off decision -
+which is why, unlike Simplify tones and Trace outline first's own
+threshold/blur controls, this shipped as an unconditional upgrade to the
+existing edge-extraction internals rather than a new opt-in toggle. No
+new UI: the existing "Edge threshold" slider now serves as the
+hysteresis "strong" cutoff, with the "weak but keep if connected"
+threshold fixed internally at half that value (the conventional Canny
+2:1 starting ratio, and close enough to what was actually tuned in
+testing - 0.18/0.08 - not to need its own control).
+
+**What shipped**: `sobelMagnitude`/`edgeAngle` in `dither.js`, factored
+out of `edgeChar`'s existing inline math so the same normalization and
+angle-folding logic backs both the character-picking (`edgeChar`, used
+by Edges mode) and the new pixel-level thinning/pruning functions
+without duplicating the magic numbers twice. `nonMaxSuppress(magnitudes,
+angles, width, height)` and `hysteresisThreshold(magnitudes, width,
+height, highThreshold, lowThreshold)`, both pure array functions
+consistent with everything else in `dither.js`, unit tested directly
+(a five-pixel synthetic ridge for NMS; a small synthetic strong/weak/
+isolated graph for hysteresis's connectivity behavior) rather than only
+through screenshot comparison. `computeHandDrawnOutlinePatches()` in
+`script.js` now runs Sobel → NMS → hysteresis instead of Sobel →
+threshold, with no change to its public behavior (same checkbox, same
+slider, same permalink parameter).
+
+**Lesson**: generic-sounding advice ("here's a Canny pipeline," "here's a
+WebGL shader for this") is worth the same test as anything self-generated
+- not adopted because it sounds sophisticated, not dismissed because it
+arrived as a large unsolicited code dump. The GPU delivery mechanism was
+a genuine mismatch for this codebase's testing architecture and was
+declined; the underlying algorithmic idea (NMS + hysteresis are real,
+well-understood techniques, not this project's own invention) was
+tested the same way every other idea in this investigation was, and this
+time it earned its place with a clean, unconditional win.

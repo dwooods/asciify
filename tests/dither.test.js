@@ -8,7 +8,11 @@ const {
   asciiRamp,
   luminanceToChar,
   sobelGradient,
+  sobelMagnitude,
+  edgeAngle,
   edgeChar,
+  nonMaxSuppress,
+  hysteresisThreshold,
   boxBlurLuminance,
   computeComplexityMap,
   buildGlyphAtlas,
@@ -191,6 +195,57 @@ test("edgeChar returns a space when the gradient is weaker than the threshold", 
   // dx=5, dy=5 normalizes to a magnitude of ~1.25 (see sobelMaxMagnitude);
   // a threshold above that should suppress it to a blank cell.
   assert.equal(edgeChar(5, 5, 2.0), " ");
+});
+
+test("sobelMagnitude normalizes a gradient vector to the shared 0-255-ish threshold scale", () => {
+  assert.ok(Math.abs(sobelMagnitude(5, 5) - 1.25) < 0.001);
+  assert.ok(Math.abs(sobelMagnitude(1020, 0) - 1020 / (4 * Math.SQRT2)) < 0.001);
+});
+
+test("edgeAngle folds gradient direction to 0..180 degrees, matching edgeChar's own buckets", () => {
+  assert.equal(edgeAngle(1020, 0), 0);
+  assert.equal(edgeAngle(0, 1020), 90);
+  assert.ok(Math.abs(edgeAngle(765, 765) - 45) < 0.001);
+  assert.ok(Math.abs(edgeAngle(765, -765) - 135) < 0.001);
+});
+
+test("nonMaxSuppress keeps only the local maximum along the gradient direction, suppressing its neighbors", () => {
+  // A 1x5 ridge peaking at index 2, all pixels reporting a ~0deg gradient
+  // (the "|" bucket, which compares each pixel against its left/right
+  // neighbors) - only the peak should survive; its shoulders (5 and 7),
+  // each smaller than a neighbor, should be suppressed to 0.
+  const magnitudes = [0, 5, 10, 7, 0];
+  const angles = [0, 0, 0, 0, 0];
+  const out = nonMaxSuppress(magnitudes, angles, 5, 1);
+  assert.deepEqual(Array.from(out), [0, 0, 10, 0, 0]);
+});
+
+test("nonMaxSuppress clamps its neighbor lookup at the image edge instead of reading out of bounds", () => {
+  // A single interior peak with flat zeros on both sides - the edge pixels
+  // themselves have no real neighbor magnitude to compare against, so this
+  // just confirms clamped sampling doesn't throw or corrupt the peak.
+  const magnitudes = [3, 0, 0];
+  const angles = [0, 0, 0];
+  const out = nonMaxSuppress(magnitudes, angles, 3, 1);
+  assert.equal(out[0], 3);
+});
+
+test("hysteresisThreshold keeps strong edges and weak edges connected to them, drops isolated weak edges", () => {
+  const width = 5, height = 5;
+  const at = (x, y) => y * width + x;
+  const magnitudes = new Float64Array(width * height);
+  magnitudes[at(0, 0)] = 1.0; // strong
+  magnitudes[at(1, 1)] = 0.5; // weak, diagonally touches the strong pixel
+  magnitudes[at(2, 2)] = 0.5; // weak, diagonally touches the now-promoted (1,1)
+  magnitudes[at(4, 4)] = 0.5; // weak, isolated - no path back to any strong pixel
+
+  const out = hysteresisThreshold(magnitudes, width, height, 0.8, 0.3);
+
+  assert.equal(out[at(0, 0)], 1, "strong pixel should always be kept");
+  assert.equal(out[at(1, 1)], 1, "weak pixel touching a strong edge should be promoted");
+  assert.equal(out[at(2, 2)], 1, "weak pixel transitively connected through another promoted weak pixel should be promoted");
+  assert.equal(out[at(4, 4)], 0, "weak pixel with no connection to any strong edge should be dropped");
+  assert.equal(Array.from(out).reduce((a, b) => a + b, 0), 3, "no other pixel should be marked as an edge");
 });
 
 test("boxBlurLuminance leaves a perfectly flat image unchanged", () => {

@@ -117,18 +117,102 @@
   // range the UI already uses for the (unrelated) dithering threshold.
   const sobelMaxMagnitude = 4 * Math.SQRT2;
 
+  // A gradient vector's magnitude, normalized to the same 0-255-ish scale
+  // the UI's threshold sliders use (see sobelMaxMagnitude above).
+  function sobelMagnitude(dx, dy) {
+    return Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
+  }
+
+  // A gradient vector's direction folded to 0..180 degrees - edge
+  // orientation is direction-agnostic (a light-to-dark and a dark-to-light
+  // edge running the same way should bucket the same), so 180 degrees
+  // apart is treated as identical.
+  function edgeAngle(dx, dy) {
+    const angle = (Math.atan2(dy, dx) * 180) / Math.PI; // gradient direction, -180..180
+    return ((angle % 180) + 180) % 180;
+  }
+
   // Buckets a gradient vector into one of four line-drawing characters
   // representing the edge's orientation (edges run perpendicular to the
   // gradient), or a space when the gradient is too weak to count as an edge.
   function edgeChar(dx, dy, threshold) {
-    const magnitude = Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
+    const magnitude = sobelMagnitude(dx, dy);
     if (magnitude <= threshold) return " ";
-    let angle = (Math.atan2(dy, dx) * 180) / Math.PI; // gradient direction, -180..180
-    angle = ((angle % 180) + 180) % 180; // fold to 0..180 - edge orientation is direction-agnostic
+    const angle = edgeAngle(dx, dy);
     if (angle < 22.5 || angle >= 157.5) return "|"; // gradient ~horizontal -> edge runs vertical
     if (angle < 67.5) return "\\";
     if (angle < 112.5) return "-"; // gradient ~vertical -> edge runs horizontal
     return "/";
+  }
+
+  // Thins a Sobel magnitude field down to 1px-wide ridges: a pixel survives
+  // only if its magnitude is >= both neighbors along its own gradient
+  // direction (quantized to the same four orientation buckets edgeChar uses
+  // above), and is suppressed to 0 otherwise. This is the standard
+  // "non-maximum suppression" step of a Canny-style edge detector - a raw
+  // Sobel edge is several pixels wide, and without thinning, "Trace outline
+  // first" was rendering doubled/thickened strokes along every real edge
+  // instead of a clean line (see JOURNEY.md for real before/after counts).
+  function nonMaxSuppress(magnitudes, angles, width, height) {
+    const sample = (x, y) => {
+      const cx = Math.min(width - 1, Math.max(0, x));
+      const cy = Math.min(height - 1, Math.max(0, y));
+      return magnitudes[cy * width + cx];
+    };
+    const out = new Float64Array(magnitudes.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        const m = magnitudes[i];
+        const angle = angles[i];
+        let n1, n2;
+        if (angle < 22.5 || angle >= 157.5) { n1 = sample(x - 1, y); n2 = sample(x + 1, y); }
+        else if (angle < 67.5) { n1 = sample(x - 1, y - 1); n2 = sample(x + 1, y + 1); }
+        else if (angle < 112.5) { n1 = sample(x, y - 1); n2 = sample(x, y + 1); }
+        else { n1 = sample(x + 1, y - 1); n2 = sample(x - 1, y + 1); }
+        out[i] = (m >= n1 && m >= n2) ? m : 0;
+      }
+    }
+    return out;
+  }
+
+  // Canny-style dual-threshold ("hysteresis") edge selection: pixels at or
+  // above highThreshold are kept unconditionally ("strong" edges); pixels
+  // at or above lowThreshold are kept only if connected (8-neighbor,
+  // transitively through other weak pixels) to a strong edge, and dropped
+  // otherwise. Fixes the isolated single-pixel specks a single global
+  // threshold leaves scattered across textured photos (fur, grain) without
+  // erasing genuine edges that dip briefly below the main threshold - see
+  // JOURNEY.md for real speck counts before/after on the test photos.
+  function hysteresisThreshold(magnitudes, width, height, highThreshold, lowThreshold) {
+    const total = width * height;
+    const strong = new Uint8Array(total);
+    const weak = new Uint8Array(total);
+    for (let i = 0; i < total; i++) {
+      if (magnitudes[i] >= highThreshold) strong[i] = 1;
+      else if (magnitudes[i] >= lowThreshold) weak[i] = 1;
+    }
+    const out = new Float64Array(total);
+    const stack = [];
+    for (let i = 0; i < total; i++) {
+      if (strong[i]) { out[i] = 1; stack.push(i); }
+    }
+    while (stack.length) {
+      const i = stack.pop();
+      const x = i % width;
+      const y = (i - x) / width;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const sx = x + dx;
+          const sy = y + dy;
+          if (sx < 0 || sx >= width || sy < 0 || sy >= height) continue;
+          const ni = sy * width + sx;
+          if (weak[ni] && !out[ni]) { out[ni] = 1; stack.push(ni); }
+        }
+      }
+    }
+    return out;
   }
 
   // A light 3x3 box blur over a greyscale RGBA buffer, returned as a new
@@ -616,7 +700,11 @@
     asciiRampExtended,
     luminanceToChar,
     sobelGradient,
+    sobelMagnitude,
+    edgeAngle,
     edgeChar,
+    nonMaxSuppress,
+    hysteresisThreshold,
     boxBlurLuminance,
     computeComplexityMap,
     buildGlyphAtlas,
