@@ -1147,3 +1147,56 @@ proportional-font half is the one piece that doesn't transfer to a
 monospace-output tool. That is a legitimate, externally-validated reason
 this specific problem may not have a fix available within asciify's own
 constraints, rather than a fix nobody has found yet.
+
+## Phase 12: A fifth attempt, and closing the tiger investigation
+
+One idea from this whole arc had never actually been tested: build the
+Hand-drawn charset from *empirical frequency* in real hand-made ASCII art
+(already sitting in `test-assets/*.txt` - four pieces from
+asciiart.website, confirmed hand-drawn back in this project's early
+research) instead of deriving it from measured ink-density math. Unlike
+the four fixes in Phases 10-11, all of which acted on the busy-cell gate
+(already shown incapable of fixing this photo, since pure brightness
+alone fails regardless of gating), this one changes a genuinely different
+lever - which characters exist in the set at all.
+
+Built a 60-character glyph atlas from every character that actually
+appears across the four real files (not just the dominant 11), rasterized
+in the app's real font at the same cell size as the shipped feature.
+Checked the achievable ink range before rendering anything: **the
+densest real character these artists ever used tops out at 0.30 mean
+ink - lower than the existing 70-character set's 0.34 ceiling.** That's
+consistent with the material itself: hand-drawn line art has no reason to
+reach for dense, block-like letters (M, W, B, @), so a charset built
+purely from that material inherits an even lower dark-tail ceiling than
+the one already identified as the tiger's root cause.
+
+Rendered anyway, rather than trusting that prediction. Result: the tiger
+was still an illegible wall, if anything more uniform (heavier `#`/`0`/`H`
+concentration, consistent with the lower ceiling forcing even more
+distinct dark tones to collapse onto fewer characters). More
+importantly, **the truck - the known-good case every other attempt this
+session left untouched - visibly regressed**: horizontal banding
+artifacts running through the whole image, worse than the shipped
+70-character set. Excluding every character absent from a 4-piece sample
+also excluded real, useful mid-tone shapes (several letters and
+punctuation marks) that the shipped set relies on for illustrations,
+not just photos. A charset that's empirically "authentic" to a small
+real sample isn't automatically better for structure matching in
+general - it's only as good as what that sample happened to need.
+
+**Closing this out.** Five attempts, two research phases, one paywalled-
+then-obtained academic paper, and a clean regression on the one thing
+every earlier attempt had protected (the known-good illustrations) - all
+converging on the same conclusion Phase 10 first found and Phase 11's
+external validation confirmed: Hand-drawn style's tiger-photo failure is
+rooted in the brightness term's own dark-tail collapse against a
+necessarily-limited character set, not in texture handling, brightness
+scoring, curated spacing, orientation-aware gating, or charset
+provenance. The real fix (phase congruency plus proportional-font
+placement, per the 2015 paper) needs an architectural piece - variable-
+width characters - that this project cannot adopt without giving up its
+core "pastes into any plain-text surface" premise. Hand-drawn style
+ships as-is, with this limitation now understood rather than merely
+observed: five specific, real hypotheses ruled out by name, not just a
+vague "photos with heavy texture don't work well" note.
