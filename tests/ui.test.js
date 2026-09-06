@@ -346,6 +346,29 @@ test("the Suppress background info icon toggles a tap/keyboard-accessible popove
   assert.equal(await page.isVisible("#suppressBackgroundInfoPopover"), true);
 });
 
+test("the Hand-drawn style info icon toggles a tap/keyboard-accessible popover", async () => {
+  // Same shared setupInfoPopover() helper as Suppress background's icon -
+  // this exercises the second, independent icon/popover pair it wires up.
+  await loadTestImage();
+  await page.selectOption("#renderMode", "ascii");
+
+  assert.equal(await page.isVisible("#handDrawnStyleInfoPopover"), false);
+  assert.equal(await page.getAttribute("#handDrawnStyleInfoIcon", "aria-expanded"), "false");
+
+  await page.click("#handDrawnStyleInfoIcon");
+  assert.equal(await page.isVisible("#handDrawnStyleInfoPopover"), true);
+  assert.equal(await page.getAttribute("#handDrawnStyleInfoIcon", "aria-expanded"), "true");
+  assert.ok((await page.textContent("#handDrawnStyleInfoPopover")).length > 0);
+
+  await page.click("h1");
+  assert.equal(await page.isVisible("#handDrawnStyleInfoPopover"), false);
+  assert.equal(await page.getAttribute("#handDrawnStyleInfoIcon", "aria-expanded"), "false");
+
+  await page.focus("#handDrawnStyleInfoIcon");
+  await page.keyboard.press("Enter");
+  assert.equal(await page.isVisible("#handDrawnStyleInfoPopover"), true);
+});
+
 test("switching to ASCII mode renders using only the palette's characters", async () => {
   await loadTestImage();
   await page.selectOption("#renderMode", "ascii");

@@ -178,6 +178,8 @@
   const suppressBackgroundStatus = $("#suppressBackgroundStatus");
   const suppressBackgroundInfoIcon = $("#suppressBackgroundInfoIcon");
   const suppressBackgroundInfoPopover = $("#suppressBackgroundInfoPopover");
+  const handDrawnStyleInfoIcon = $("#handDrawnStyleInfoIcon");
+  const handDrawnStyleInfoPopover = $("#handDrawnStyleInfoPopover");
   const resetBtn = $("#resetBtn");
   const output = $("#output");
   const emptyState = $("#emptyState");
@@ -491,27 +493,32 @@
     requestSubjectMask();
   });
 
-  // Tap/keyboard fallback for the info icon's native title tooltip - most
+  // Tap/keyboard fallback for an info icon's native title tooltip - most
   // mobile browsers don't show `title` on tap at all, and it's unreachable
-  // without a pointer for keyboard users. Click toggles it; blur or Escape
-  // closes it, matching the "help" affordance the desktop hover already
-  // gives without stepping on it.
-  function toggleSuppressBackgroundInfo(show) {
-    const next = show ?? suppressBackgroundInfoPopover.style.display === "none";
-    suppressBackgroundInfoPopover.style.display = next ? "block" : "none";
-    suppressBackgroundInfoIcon.setAttribute("aria-expanded", String(next));
+  // without a pointer for keyboard users. Click toggles it; blur or a click
+  // elsewhere closes it, matching the "help" affordance the desktop hover
+  // already gives without stepping on it. Shared by every info icon/popover
+  // pair in the panel (Suppress background, Hand-drawn style).
+  function setupInfoPopover(icon, popover) {
+    function toggle(show) {
+      const next = show ?? popover.style.display === "none";
+      popover.style.display = next ? "block" : "none";
+      icon.setAttribute("aria-expanded", String(next));
+    }
+    icon.addEventListener("click", () => toggle());
+    icon.addEventListener("keydown", function (evt) {
+      if (evt.key !== "Enter" && evt.key !== " ") return;
+      evt.preventDefault();
+      toggle();
+    });
+    icon.addEventListener("blur", () => toggle(false));
+    document.addEventListener("click", (evt) => {
+      if (evt.target !== icon) toggle(false);
+    });
   }
 
-  suppressBackgroundInfoIcon.addEventListener("click", () => toggleSuppressBackgroundInfo());
-  suppressBackgroundInfoIcon.addEventListener("keydown", function (evt) {
-    if (evt.key !== "Enter" && evt.key !== " ") return;
-    evt.preventDefault();
-    toggleSuppressBackgroundInfo();
-  });
-  suppressBackgroundInfoIcon.addEventListener("blur", () => toggleSuppressBackgroundInfo(false));
-  document.addEventListener("click", (evt) => {
-    if (evt.target !== suppressBackgroundInfoIcon) toggleSuppressBackgroundInfo(false);
-  });
+  setupInfoPopover(suppressBackgroundInfoIcon, suppressBackgroundInfoPopover);
+  setupInfoPopover(handDrawnStyleInfoIcon, handDrawnStyleInfoPopover);
 
   adaptiveDetailInput.addEventListener("change", function () {
     adaptiveDetail = this.checked;

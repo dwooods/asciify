@@ -125,6 +125,8 @@
         <div class="field checkrow" id="handDrawnStyleField" style="display:none;">
           <input type="checkbox" id="handDrawnStyle">
           <label for="handDrawnStyle">Hand-drawn style <span class="val">matches each cell's actual shape, not just brightness</span></label>
+          <span class="infoIcon" id="handDrawnStyleInfoIcon" tabindex="0" role="button" aria-expanded="false" aria-describedby="handDrawnStyleInfoPopover" title="Picks each character by matching candidate glyphs' own shapes against the image, instead of a brightness ramp. Works well on illustrations and clean subjects; heavily-textured photos (fur, grain, busy backgrounds) are a known limitation.">ⓘ</span>
+          <div class="infoPopover" id="handDrawnStyleInfoPopover" role="tooltip" style="display:none;">Picks each character by matching candidate glyphs' own shapes against the image, instead of a brightness ramp. Works well on illustrations and clean subjects; heavily-textured photos (fur, grain, busy backgrounds) are a known limitation.</div>
         </div>
 
         <div class="field" id="focusRegionField" style="display:none;">
