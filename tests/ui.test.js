@@ -528,6 +528,55 @@ test("Hand-drawn style round-trips through the settings permalink and resets to 
   assert.equal(new URL(page.url()).searchParams.get("handdrawn"), null);
 });
 
+test("Hand-drawn style's Simplify tones control is hidden until enabled, defaults to off, and changes the render", async () => {
+  await page.setInputFiles("#filepicker", photoImagePath);
+  await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await page.selectOption("#renderMode", "ascii");
+  assert.equal(await page.isVisible("#handDrawnDetailField"), false);
+
+  await page.check("#handDrawnStyle");
+  await page.waitForTimeout(150);
+  assert.equal(await page.isVisible("#handDrawnDetailField"), true);
+  assert.equal(await page.textContent("#handDrawnDetailVal"), "off");
+  const before = await page.evaluate(() => document.getElementById("output").innerText);
+
+  await page.fill("#handDrawnDetail", "8");
+  await page.dispatchEvent("#handDrawnDetail", "change");
+  await page.waitForTimeout(150);
+  assert.equal(await page.textContent("#handDrawnDetailVal"), "8 levels");
+  const after = await page.evaluate(() => document.getElementById("output").innerText);
+  assert.notEqual(after, before, "expected lowering Simplify tones to change the render");
+
+  // Unchecking Hand-drawn style hides the control again.
+  await page.uncheck("#handDrawnStyle");
+  assert.equal(await page.isVisible("#handDrawnDetailField"), false);
+});
+
+test("Simplify tones round-trips through the settings permalink and resets to off", async () => {
+  await page.goto(`${baseUrl}/index.html?mode=ascii&handdrawn=1&simplify=10`, { waitUntil: "domcontentloaded" });
+  assert.equal(await page.inputValue("#handDrawnDetail"), "10");
+  assert.equal(await page.textContent("#handDrawnDetailVal"), "10 levels");
+
+  await loadTestImage();
+  const url = new URL(page.url());
+  assert.equal(url.searchParams.get("simplify"), "10");
+
+  await page.click("#resetBtn");
+  await page.waitForTimeout(100);
+  assert.equal(await page.inputValue("#handDrawnDetail"), "32");
+  assert.equal(await page.textContent("#handDrawnDetailVal"), "off");
+  assert.equal(new URL(page.url()).searchParams.get("simplify"), null);
+});
+
+test("an out-of-range simplify permalink parameter is ignored rather than crashing the page", async () => {
+  await page.goto(`${baseUrl}/index.html?mode=ascii&handdrawn=1&simplify=not-a-number`, { waitUntil: "domcontentloaded" });
+  assert.equal(await page.isChecked("#handDrawnStyle"), true);
+  assert.equal(await page.inputValue("#handDrawnDetail"), "32");
+
+  await page.goto(`${baseUrl}/index.html?mode=ascii&handdrawn=1&simplify=999`, { waitUntil: "domcontentloaded" });
+  assert.equal(await page.inputValue("#handDrawnDetail"), "32");
+});
+
 test("drawing and clearing a focus area updates status and the ASCII render", async () => {
   await page.setInputFiles("#filepicker", photoImagePath);
   await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");

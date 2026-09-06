@@ -1200,3 +1200,89 @@ core "pastes into any plain-text surface" premise. Hand-drawn style
 ships as-is, with this limitation now understood rather than merely
 observed: five specific, real hypotheses ruled out by name, not just a
 vague "photos with heavy texture don't work well" note.
+
+## Phase 13: "Simplify tones" - the sixth attempt, and the first real win
+
+The user reopened the closed investigation with a genuinely different
+framing: *"find a way to simplify the image first, then attempt to
+convert to ASCII."* Worth distinguishing from what five earlier attempts
+already covered before building anything: a global tone remap (the
+rank-based attempt) and per-cell texture/structure gating (non-CRF, phase
+congruency) were both tried and fell to the same root cause. The one
+untested piece of "simplify first" was *spatial consolidation* -
+forcing genuinely-similar-toned neighboring cells to share an identical
+brightness target, on the theory that part of the tiger's illegibility
+isn't just "too few dark characters" in the abstract, but that
+neighboring cells within what should read as one coherent dark region
+(the fur) were each independently picking among several near-tied glyphs
+based on tiny pixel noise - producing a scattered, inconsistent mix
+instead of a repeated, eye-readable block.
+
+**Prototyped first, as always.** Quantized each cell's raw mean ink into
+a small number of buckets spanning THIS image's own observed range
+(deliberately absolute-value bucketing, not the rank-based attempt's
+percentile stretch - rank normalization manufactures precision that
+isn't really there, which is what caused that attempt's truck banding;
+absolute bucketing can only merge cells that are already close in real
+brightness, never invent contrast where none exists). At 8 buckets, the
+tiger showed something none of the previous five attempts produced:
+visible coherent blocks and a distinguishable eye-like shape near the
+top - a real, visible qualitative change, not just a different-looking
+wall of noise.
+
+**But it regressed the truck** - the one thing every earlier attempt had
+left untouched. Gating the quantization to only "busy" cells (reusing
+the existing complexity threshold) didn't fix it: 68.7% of the truck's
+own cells are *also* classified busy by that measure, so the gate barely
+protected anything. Trying a gentler 16-bucket setting softened but
+didn't eliminate the truck's degradation, while also shrinking the
+tiger's benefit - confirming this is a genuine dial, not a threshold to
+tune once and forget. **First real partial win in six attempts, with an
+honest, unavoidable trade-off attached.**
+
+**Decision, put to the user rather than made silently**: ship it as a
+new user-adjustable control ("Simplify tones") rather than a new fixed
+default, since no single setting serves both a clean illustration and a
+heavily-textured photo well. Implementation:
+- `quantizeInk(value, minObserved, maxObserved, levels)` in `dither.js` -
+  pure, tested logic, `0` levels is an explicit off sentinel rather than
+  a very-high-number stand-in, so the default path is a real, separate
+  code branch (`if (!levels) return value`), not an approximation of one.
+- `matchGlyph` gained an optional fourth `overrideMeanInk` parameter
+  (`??`, not `||` - 0 is a legitimate real value, not "not provided").
+  It replaces the brightness target only; shape matching still reads the
+  cell's own real pixels, unmodified. Every existing call site is
+  unaffected since the parameter defaults to `undefined`.
+- The slider's own maximum value (32) IS the off sentinel, and the
+  default - a real photo pass confirmed the render is unaffected until a
+  user actually moves it down.
+- Quantization only ever touches cells the existing complexity gate
+  already calls "busy" - confirmed by testing, not assumed, that turning
+  it off leaves illustrations exactly as validated in Phase 9.
+- One bug caught in review before shipping, not by a test failing:
+  background-masked cells (Suppress background) were being included in
+  the bucket range computation despite never reaching `matchGlyph` -
+  wasting buckets on content that renders as blank space instead of
+  spending all of them on the subject's own real range. Fixed by
+  excluding background-masked cells from the min/max scan, the same
+  `isBackgroundPixel` check the render loop itself already uses.
+
+**Where this leaves the tiger case, honestly**: "Simplify tones" is a
+real, tested improvement a user can reach for on a difficult photo - not
+a fix that makes Hand-drawn style's known limitation disappear. At its
+most aggressive setting the tiger still doesn't read as fully
+photorealistic; it reads as a more *coherent* rendering than before,
+which is a genuinely different and better place to leave this than five
+attempts that changed nothing. The underlying ceiling from Phases 10-12
+(a monospace character set's achievable dark-tail resolution) is still
+exactly what it was - this control works around part of its effect
+without touching the ceiling itself.
+
+**Lesson worth keeping**: a "closed" investigation is closed against the
+hypotheses actually tested, not against every possible framing of the
+problem. Five falsified attempts earned real confidence that texture
+handling, brightness scoring, charset spacing, and orientation gating
+weren't the answer - but "simplify first" turned out to name a mechanism
+(spatial consolidation) genuinely outside that set, and reopening on a
+specific, testable new idea rather than a vague "try harder" is what
+made it worth the hour rather than a repeat of the same five results.

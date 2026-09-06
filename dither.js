@@ -300,10 +300,20 @@
   // whose overall ink density is wildly different from the patch's own
   // brightness needs to lose even when its shape happens to correlate
   // well, hence the blend rather than NCC alone.
-  function matchGlyph(imagePatch, glyphAtlas, structureWeight) {
+  //
+  // `overrideMeanInk`, when provided (not undefined - 0 is a legitimate
+  // real value, hence `??` not `||`), replaces the patch's own measured
+  // mean ink for the brightness term only, while shape matching still
+  // reads the patch's real, unmodified pixels. This is what
+  // quantizeInk() below feeds in for the "Simplify tones" control -
+  // letting several genuinely-similar cells share one forced-identical
+  // brightness target (and therefore, usually, the same glyph) without
+  // touching the structure term at all.
+  function matchGlyph(imagePatch, glyphAtlas, structureWeight, overrideMeanInk) {
     const normalizedPatch = normalizeInkPatch(imagePatch);
     const range = glyphAtlas.maxInk - glyphAtlas.minInk || 1e-9;
-    const patchMeanInk = glyphAtlas.minInk + meanInk(imagePatch) * range;
+    const rawMeanInk = overrideMeanInk ?? meanInk(imagePatch);
+    const patchMeanInk = glyphAtlas.minInk + rawMeanInk * range;
     let best = null;
     for (const glyph of glyphAtlas) {
       let structureScore = 0;
@@ -313,6 +323,29 @@
       if (!best || score > best.score) best = { char: glyph.char, score };
     }
     return best;
+  }
+
+  // Quantizes a raw mean-ink value (0-1) into `levels` evenly-spaced,
+  // absolute-value buckets across [minObserved, maxObserved] - THIS
+  // image's own real per-cell mean-ink range, not the theoretical 0-1
+  // range or a rank/percentile stretch (that was tried and rejected: see
+  // JOURNEY.md - rank-based remapping manufactures precision that isn't
+  // really there and introduces banding on already-fine illustrations).
+  // Absolute-value bucketing only merges cells that are ALREADY close in
+  // real brightness, so it can't invent contrast where none exists - it
+  // can only make genuinely-similar cells share an identical, forced
+  // brightness target (and therefore usually the same matched glyph),
+  // consolidating what would otherwise be a noisy, cell-by-cell flicker
+  // among several near-tied glyphs into a coherent, repeated run.
+  // `levels` of 0 (or any falsy value) is the explicit "off" sentinel -
+  // returns the value unchanged, matching every existing matchGlyph
+  // caller's behavior exactly.
+  function quantizeInk(value, minObserved, maxObserved, levels) {
+    if (!levels) return value;
+    const range = maxObserved - minObserved || 1e-9;
+    const t = (value - minObserved) / range;
+    const bucket = Math.max(0, Math.min(levels - 1, Math.floor(t * levels)));
+    return minObserved + ((bucket + 0.5) / levels) * range;
   }
 
   // Levels adjustment applied before dithering/ramp-mapping: brightness is
@@ -551,6 +584,8 @@
     computeComplexityMap,
     buildGlyphAtlas,
     matchGlyph,
+    meanInk,
+    quantizeInk,
     adjustLevels,
     computeImageStats,
     suggestLevels,

@@ -20,6 +20,8 @@
     computeComplexityMap,
     buildGlyphAtlas,
     matchGlyph,
+    meanInk,
+    quantizeInk,
     adjustLevels,
     computeImageStats,
     suggestRenderMode,
@@ -68,6 +70,17 @@
   // getHandDrawnGlyphAtlas/computeHandDrawnPatches below), instead of a
   // brightness-ramp lookup.
   let handDrawnStyle = false;
+  // "Simplify tones" (Hand-drawn style only): the raw slider value (4-32),
+  // where 32 is the explicit "off" sentinel - see handDrawnDetailLevels()
+  // below for why off is a real code path, not just a very high number.
+  // Only engages in cells the existing complexity map already calls
+  // "busy" (see computeHandDrawnAsciiLines) - consolidating several
+  // genuinely-similar-toned cells within real texture onto one forced
+  // brightness target, which usually resolves to a repeated glyph, without
+  // touching the clean, well-defined regions that don't need it. See
+  // JOURNEY.md for why this - not a global remap - is the version that
+  // actually helps a busy photo without visibly degrading a clean one.
+  let handDrawnDetail = 32;
   // A user-drawn rectangle (normalized 0-1 image coordinates, or null) that
   // always gets the full palette regardless of measured complexity - set by
   // dragging on the thumbnail overlay (see focusCanvas's listeners below).
@@ -133,6 +146,7 @@
     suppressBackground: false,
     adaptiveDetail: false,
     handDrawnStyle: false,
+    handDrawnDetail: 32,
   };
 
   const canvas = document.createElement("canvas");
@@ -151,6 +165,9 @@
   const adaptiveDetailDesc = $("#adaptiveDetailDesc");
   const handDrawnStyleField = $("#handDrawnStyleField");
   const handDrawnStyleInput = $("#handDrawnStyle");
+  const handDrawnDetailField = $("#handDrawnDetailField");
+  const handDrawnDetailInput = $("#handDrawnDetail");
+  const handDrawnDetailVal = $("#handDrawnDetailVal");
   const focusRegionField = $("#focusRegionField");
   const focusRegionStatus = $("#focusRegionStatus");
   const drawFocusBtn = $("#drawFocusBtn");
@@ -332,6 +349,7 @@
     charsetField.style.display = renderMode === "ascii" && !handDrawnStyle ? "" : "none";
     paletteField.style.display = renderMode === "ascii" && !handDrawnStyle ? "" : "none";
     handDrawnStyleField.style.display = renderMode === "ascii" ? "" : "none";
+    handDrawnDetailField.style.display = renderMode === "ascii" && handDrawnStyle ? "" : "none";
     adaptiveDetailField.style.display = (renderMode === "ascii" && !handDrawnStyle) || renderMode === "edges" ? "" : "none";
     focusRegionField.style.display =
       ((renderMode === "ascii" && !handDrawnStyle) || renderMode === "edges") && adaptiveDetail ? "" : "none";
@@ -555,6 +573,17 @@
     render();
   });
 
+  handDrawnDetailInput.addEventListener("input", function () {
+    handDrawnDetailVal.textContent = this.value >= 32 ? "off" : `${this.value} levels`;
+  });
+  handDrawnDetailInput.addEventListener("change", function () {
+    const v = parseInt(this.value, 10);
+    if (v === handDrawnDetail) return;
+    handDrawnDetail = v;
+    updateUrl();
+    render();
+  });
+
   // Manual focus area: a user-drawn rectangle on the thumbnail that always
   // gets the full character palette in Adaptive detail, regardless of what
   // the automatic complexity measurement finds there - the "user overrides
@@ -749,6 +778,9 @@
     adaptiveDetailInput.checked = adaptiveDetail;
     handDrawnStyle = DEFAULTS.handDrawnStyle;
     handDrawnStyleInput.checked = handDrawnStyle;
+    handDrawnDetail = DEFAULTS.handDrawnDetail;
+    handDrawnDetailInput.value = handDrawnDetail;
+    handDrawnDetailVal.textContent = "off";
     focusRegion = null;
     cancelFocusDrawing();
     updateFocusOverlay();
@@ -1152,6 +1184,30 @@
     const atlas = getHandDrawnGlyphAtlas(cellWidth, cellHeight);
     const patches = computeHandDrawnPatches(width, height, cellWidth, cellHeight);
 
+    // "Simplify tones": handDrawnDetail's slider max (32) is the explicit
+    // off sentinel (see its declaration above) - only compute the means/
+    // range this needs when a lower value actually engages it, since nine
+    // times out of ten it's off and this would just be wasted work.
+    const detailLevels = handDrawnDetail >= 32 ? 0 : handDrawnDetail;
+    let means, minMeanInk, maxMeanInk;
+    if (detailLevels) {
+      means = patches.map(meanInk);
+      minMeanInk = Infinity;
+      maxMeanInk = -Infinity;
+      // Background-masked cells (Suppress background) never reach
+      // matchGlyph and shouldn't shape the bucket range either - including
+      // them would waste buckets on content that's rendered as blank space
+      // instead of spending all of them on the subject's own real range.
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (isBackgroundPixel(x, y, width, height)) continue;
+          const m = means[y * width + x];
+          if (m < minMeanInk) minMeanInk = m;
+          if (m > maxMeanInk) maxMeanInk = m;
+        }
+      }
+    }
+
     const lines = [];
     for (let y = 0; y < height; y++) {
       let line = "";
@@ -1160,9 +1216,14 @@
           line += " ";
           continue;
         }
-        const busy = complexity[y * width + x] >= adaptiveDetailThreshold;
+        const i = y * width + x;
+        const busy = complexity[i] >= adaptiveDetailThreshold;
         const weight = busy ? handDrawnBusyStructureWeight : handDrawnStructureWeight;
-        line += matchGlyph(patches[y * width + x], atlas, weight).char;
+        // Only consolidates cells already flagged "busy" - a clean,
+        // well-defined region (an illustration's flat panels) never has
+        // its brightness target touched, regardless of the slider.
+        const overrideMeanInk = busy && detailLevels ? quantizeInk(means[i], minMeanInk, maxMeanInk, detailLevels) : undefined;
+        line += matchGlyph(patches[i], atlas, weight, overrideMeanInk).char;
       }
       lines.push(line);
     }
@@ -1511,6 +1572,7 @@
       }
     }
     if (handDrawnStyle) params.set("handdrawn", "1");
+    if (handDrawnStyle && handDrawnDetail !== DEFAULTS.handDrawnDetail) params.set("simplify", handDrawnDetail);
 
     const query = params.toString();
     history.replaceState(null, "", query ? `?${query}` : location.pathname);
@@ -1635,6 +1697,13 @@
       adaptiveDetailInput.checked = false;
       focusRegion = null;
       applyRenderModeVisibility();
+
+      const simplifyParam = parseInt(params.get("simplify"), 10);
+      if (Number.isFinite(simplifyParam) && simplifyParam >= 4 && simplifyParam <= 32) {
+        handDrawnDetail = simplifyParam;
+        handDrawnDetailInput.value = handDrawnDetail;
+        handDrawnDetailVal.textContent = handDrawnDetail >= 32 ? "off" : `${handDrawnDetail} levels`;
+      }
     }
   }
 

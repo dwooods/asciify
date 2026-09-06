@@ -129,6 +129,11 @@
           <div class="infoPopover" id="handDrawnStyleInfoPopover" role="tooltip" style="display:none;">Picks each character by matching candidate glyphs' own shapes against the image, instead of a brightness ramp. Works well on illustrations and clean subjects; heavily-textured photos (fur, grain, busy backgrounds) are a known limitation.</div>
         </div>
 
+        <div class="field" id="handDrawnDetailField" style="display:none;">
+          <label for="handDrawnDetail">Simplify tones <span class="val" id="handDrawnDetailVal">off</span></label>
+          <input type="range" id="handDrawnDetail" min="4" max="32" value="32">
+        </div>
+
         <div class="field" id="focusRegionField" style="display:none;">
           <label>Focus area <span class="val" id="focusRegionStatus">optional - always full detail</span></label>
           <div class="btn-group">

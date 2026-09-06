@@ -12,6 +12,7 @@ const {
   computeComplexityMap,
   buildGlyphAtlas,
   matchGlyph,
+  quantizeInk,
   adjustLevels,
   computeImageStats,
   suggestLevels,
@@ -308,6 +309,51 @@ test("matchGlyph treats a near-flat patch as having no structure to match", () =
     v === 1 ? 0.01 : 0
   );
   assert.equal(matchGlyph(almostBlank, atlas, 0.9).char, " ");
+});
+
+test("matchGlyph's overrideMeanInk replaces the brightness target without touching shape matching", () => {
+  // Two visually distinct patches (different shapes) but deliberately
+  // given the SAME override should land on the same glyph when structure
+  // weight is 0 (pure brightness) - proving the override, not the
+  // patch's own real content, drives the brightness term.
+  const atlas = buildGlyphAtlas(testGlyphs);
+  const horizontal = glyphBitmap([".....", ".....", ".....", "#####", ".....", ".....", "....."]);
+  const vertical = glyphBitmap(["..#..", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."]);
+  const overridden1 = matchGlyph(horizontal, atlas, 0, 0.9);
+  const overridden2 = matchGlyph(vertical, atlas, 0, 0.9);
+  assert.equal(overridden1.char, overridden2.char, "same override should pick the same glyph regardless of real shape");
+
+  // An override of exactly 0 must still take effect (not be treated as
+  // "no override provided") - `??`, not `||`, is what makes 0 a real value.
+  const withZeroOverride = matchGlyph(horizontal, atlas, 0, 0);
+  const blankPatch = glyphBitmap([".....", ".....", ".....", ".....", ".....", ".....", "....."]);
+  const withoutOverride = matchGlyph(blankPatch, atlas, 0);
+  assert.equal(withZeroOverride.char, withoutOverride.char, "override of 0 should behave like a genuinely blank/zero patch");
+});
+
+test("quantizeInk buckets a value into evenly-spaced steps across the observed range", () => {
+  // 4 levels across [0, 1]: bucket centers at 0.125, 0.375, 0.625, 0.875.
+  assert.equal(quantizeInk(0.05, 0, 1, 4), 0.125);
+  assert.equal(quantizeInk(0.3, 0, 1, 4), 0.375);
+  assert.equal(quantizeInk(0.99, 0, 1, 4), 0.875);
+  // Values genuinely close together (same real bucket) collapse onto the
+  // identical representative value - the whole point of the control.
+  assert.equal(quantizeInk(0.11, 0, 1, 4), quantizeInk(0.14, 0, 1, 4));
+});
+
+test("quantizeInk uses the image's own observed range, not the theoretical 0-1 range", () => {
+  // A photo whose real per-cell means only span [0.6, 0.9] should have
+  // that narrower range divided into buckets, not [0, 1] - otherwise
+  // every bucket boundary would fall outside where the real data lives.
+  const low = quantizeInk(0.61, 0.6, 0.9, 3); // bucket 0 of 3: [0.6, 0.7)
+  const mid = quantizeInk(0.75, 0.6, 0.9, 3); // bucket 1 of 3: [0.7, 0.8)
+  const high = quantizeInk(0.89, 0.6, 0.9, 3); // bucket 2 of 3: [0.8, 0.9]
+  assert.ok(low < mid && mid < high, "expected buckets to remain ordered across the narrower real range");
+  assert.ok(low >= 0.6 && high <= 0.9, "expected bucket representatives to stay within the observed range");
+});
+
+test("quantizeInk with 0 levels (the 'off' sentinel) returns the value unchanged", () => {
+  assert.equal(quantizeInk(0.4231, 0, 1, 0), 0.4231);
 });
 
 test("adjustLevels with default settings (0 brightness, 0-255 range) is a no-op", () => {
