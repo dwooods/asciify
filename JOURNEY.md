@@ -1528,3 +1528,52 @@ and got a real decision rather than an assumption in either direction:
 neither "sounds like a good idea, ship it" nor "it has some regression,
 skip it," but actually looking at what the regression cost in practice
 before choosing.
+
+**Addendum: a real 2025 paper comparing ML classifiers against AISS for
+structure-based ASCII art.** The user uploaded "Evaluating Machine
+Learning Approaches for ASCII Art Generation" (Coumar & Kingston,
+Purdue, arXiv:2503.14375, March 2025) - not previously seen, and worth
+recording because it independently validates the direction "Trace
+outline first" already took rather than suggesting a new one.
+
+Their whole pipeline is the same shape as this feature's: extract line
+structure first (they cite Canny, same family as `sobelGradient` +
+`nonMaxSuppress` + `hysteresisThreshold`), then match characters to the
+extracted structure rather than to raw continuous tone. They compare
+that matching step across classical ML (k-NN, SVM, Random Forest),
+deep learning (CNN, ResNet, MobileNetV2), and the same non-ML **AISS**
+baseline (Xu, Zhang, Wong 2010) already cited in this file's Phase 11
+addendum.
+
+The one finding worth keeping: **AISS - pure structural-similarity
+matching, no trained classifier at all - scored the highest SSIM
+(structural fidelity) of every technique they tested (0.6681), ahead of
+CNN (0.6638) and Random Forest (0.6654).** `matchGlyph`'s NCC-based
+shape correlation is architecturally the same family as AISS (direct
+similarity matching, not a learned classifier), not the same family as
+any of their ML/DL methods - so this is independent, external evidence
+that the deterministic-matching approach this whole codebase is built
+on isn't a simplification standing in for "real" ML, it's competitive
+with it on the metric that matters most for legibility.
+
+Their "overmatching" finding is a useful piece of vocabulary, not a new
+technique: ResNet and MobileNetV2 hit 96%+ character-classification
+accuracy yet produced visibly worse art, because a confident classifier
+would pick a complex-looking-but-wrong glyph in dense/ambiguous regions
+(their examples: eyes, mouths). That is a different mechanism than but
+the same *shape* of failure as Phase 10's root cause here (a small
+cluster of very-dark characters absorbing a wide range of genuinely
+different dark tones) - both are cases where a model's confidence and
+its correctness diverge specifically in the hardest regions of an
+image. Their HoG-features-don't-help and autoencoder-preprocessing-
+hurts results are two more "tried it, no gain" findings, same spirit as
+several of this project's own ruled-out attempts.
+
+**Nothing here changed any code.** Their core comparison is classical
+vs. deep ML *classifiers* for character selection - this codebase
+doesn't use a trained classifier for that step at all, so importing
+k-NN or Random Forest would mean adding a second ML dependency to the
+core converter purely to reach parity with an approach (AISS-style
+direct matching) already in use and already scoring better on their
+own structural metric. The value here is confirmation, not a
+prototype-worthy new idea.
