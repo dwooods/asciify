@@ -1577,3 +1577,103 @@ core converter purely to reach parity with an approach (AISS-style
 direct matching) already in use and already scoring better on their
 own structural metric. The value here is confirmation, not a
 prototype-worthy new idea.
+
+## Phase 17: An AI-redrawn tiger produces the best result of the whole investigation - and reveals why
+
+The user asked Gemini to redraw the tiger photo as a clean, monochromatic
+line-art illustration - strictly black lines on white, no shading, no
+gradients, no color, explicitly stylized (symmetric stripe patterns, a
+"shaggy ruff" rendered as jagged contour lines) - then asked whether
+asciify could do the same conversion itself, and whether feeding that
+redrawn image back into the app would help.
+
+**The two questions split cleanly.** Generating that image is a real
+generative/artistic task - inventing plausible new linework, not
+detecting edges already present in pixels - fundamentally different
+from what `sobelGradient`/`nonMaxSuppress`/`hysteresisThreshold` do.
+That's out of scope for this app's deterministic, dependency-light
+architecture (more below). But converting an *already-drawn* clean
+line-art image to ASCII is exactly the input "Trace outline first" was
+built for, and testable immediately with zero code changes.
+
+**First test, default settings, was a letdown.** At the shipped default
+(100-character width), the Gemini image rendered about as busy and
+unrecognizable as the real photo always had (3503 non-space characters,
+barely different from the photo's 3595). The obvious hypothesis -
+"clean art should have less noise" - looked wrong.
+
+**The real variable turned out to be resolution, not noise.** Re-run at
+200-character width, the *same* clean line-art image produced the
+clearest, most legible tiger face this entire investigation has
+produced - eyes, nose, muzzle outline, and individual stripe patterns
+all genuinely readable, not just "more coherent than before." Run the
+*real photo* through the identical 200-character-width test as a
+controlled comparison, and it went the other way: the face disappeared
+into scattered, disconnected marks, worse than at 100 characters.
+
+That controlled pair (same image class, same width, opposite outcomes)
+pins down the actual mechanism: it isn't about noise, it's about
+**contrast uniformity**. Real fur boundaries are inherently low,
+gradual-contrast edges - at finer grid resolution, each smaller cell
+samples an even weaker gradient, so more cells fall below the edge
+threshold and detection just fails. Bold hand-drawn ink lines stay
+strong at any scale, so finer resolution just resolves more of the same
+signal instead of losing it. This is a mechanistic explanation
+confirmed by a controlled test, not a guess - and it means the
+AI-redraw step helps not by "cleaning up" the photo but by converting
+inherently low-contrast structure into inherently high-contrast
+structure the existing pipeline already knows how to exploit at scale.
+
+**Attempted to automate the redraw step locally, and hit a real hardware
+wall rather than a software one.** The user runs Ollama locally and
+asked whether it or DeepSeek's Janus-Pro could do this - both verified
+and ruled out rather than assumed: Ollama's 2026 image-generation
+feature is text-to-image only, no img2img; Janus-Pro is also
+fundamentally text-to-image, and the "DeepSeek + Flux" workaround
+people use goes through a text-description bottleneck that would lose
+exact structural fidelity to the source photo (regenerating "a tiger,"
+not preserving *this* tiger's specific features). The correct tool is
+ComfyUI/Forge with a ControlNet lineart or canny preprocessor - genuine
+structure-preserving img2img, run locally on the user's own GPU, free
+and fully offline once set up, with the browser able to call a local
+server directly (`http://localhost:PORT`) without this app needing any
+backend of its own.
+
+Setup ran into a real, well-corroborated hardware gap rather than a
+fixable bug: the user's RX 6700 XT (RDNA2) is excluded from every
+current official AMD acceleration path on Windows - native ROCm
+(RDNA3+ only, per ComfyUI's own README), and the new WSL2 ROCDXG
+solution (also RDNA3+/Ryzen AI only, confirmed directly against its
+GitHub compatibility matrix) - leaving DirectML as the only path that
+sees the GPU at all. DirectML got ComfyUI's own startup log to warn
+outright that it "barely works... has not been updated in over 1 year
+and might be removed soon," misreported the card's 12GB VRAM as 1GB,
+and broke against current ComfyUI's dependencies twice (a `comfy_aimdo`
+import ComfyUI's own requirements.txt was needed for but the wrapper
+script never installed; then a genuine `comfy_kitchen` version
+incompatible with DirectML's frozen PyTorch 2.4.1) before the user
+reasonably called it - three independent sources (ComfyUI's README, the
+ROCDXG compatibility matrix, and an older ROCm community thread on the
+`amdgpu` WSL2 kernel module) all agreeing RDNA2 isn't supported was
+enough to stop rather than keep patching around a real generational gap.
+
+**Where this leaves things**: the research question is answered, fully
+and concretely, independent of the automation outcome - a properly
+prepared (bold, high-contrast, structure-preserving) input produces
+dramatically better results through the exact pipeline already shipped,
+with a real mechanistic explanation for why. Automating the redraw step
+inside the app remains a real, understood, and separately-scoped future
+option (ComfyUI + ControlNet, called from the browser to a local
+server) - blocked on the user's current hardware generation, not on
+anything in this codebase, and revisitable independent of any of it.
+
+**Lesson**: verifying rather than assuming paid off twice in one
+detour, in opposite directions - confirming Ollama/Janus-Pro genuinely
+can't do img2img avoided building on a wrong assumption, while treating
+"DirectML doesn't officially support your card" as worth investigating
+anyway (rather than accepting the first "unsupported" verdict) found
+that DirectML actually does see the GPU, just not well enough for
+current software. Knowing precisely which layer failed - GPU detection
+succeeded; production-grade compute for a fast-moving codebase like
+current ComfyUI did not - is what made "stop here" a confident decision
+instead of a shrug.
