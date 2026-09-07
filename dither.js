@@ -117,18 +117,163 @@
   // range the UI already uses for the (unrelated) dithering threshold.
   const sobelMaxMagnitude = 4 * Math.SQRT2;
 
+  // A gradient vector's magnitude, normalized to the same 0-255-ish scale
+  // the UI's threshold sliders use (see sobelMaxMagnitude above).
+  function sobelMagnitude(dx, dy) {
+    return Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
+  }
+
+  // A gradient vector's direction folded to 0..180 degrees - edge
+  // orientation is direction-agnostic (a light-to-dark and a dark-to-light
+  // edge running the same way should bucket the same), so 180 degrees
+  // apart is treated as identical.
+  function edgeAngle(dx, dy) {
+    const angle = (Math.atan2(dy, dx) * 180) / Math.PI; // gradient direction, -180..180
+    return ((angle % 180) + 180) % 180;
+  }
+
   // Buckets a gradient vector into one of four line-drawing characters
   // representing the edge's orientation (edges run perpendicular to the
   // gradient), or a space when the gradient is too weak to count as an edge.
   function edgeChar(dx, dy, threshold) {
-    const magnitude = Math.sqrt(dx * dx + dy * dy) / sobelMaxMagnitude;
+    const magnitude = sobelMagnitude(dx, dy);
     if (magnitude <= threshold) return " ";
-    let angle = (Math.atan2(dy, dx) * 180) / Math.PI; // gradient direction, -180..180
-    angle = ((angle % 180) + 180) % 180; // fold to 0..180 - edge orientation is direction-agnostic
+    const angle = edgeAngle(dx, dy);
     if (angle < 22.5 || angle >= 157.5) return "|"; // gradient ~horizontal -> edge runs vertical
     if (angle < 67.5) return "\\";
     if (angle < 112.5) return "-"; // gradient ~vertical -> edge runs horizontal
     return "/";
+  }
+
+  // Thins a Sobel magnitude field down to 1px-wide ridges: a pixel survives
+  // only if its magnitude is >= both neighbors along its own gradient
+  // direction (quantized to the same four orientation buckets edgeChar uses
+  // above), and is suppressed to 0 otherwise. This is the standard
+  // "non-maximum suppression" step of a Canny-style edge detector - a raw
+  // Sobel edge is several pixels wide, and without thinning, "Trace outline
+  // first" was rendering doubled/thickened strokes along every real edge
+  // instead of a clean line (see JOURNEY.md for real before/after counts).
+  function nonMaxSuppress(magnitudes, angles, width, height) {
+    const sample = (x, y) => {
+      const cx = Math.min(width - 1, Math.max(0, x));
+      const cy = Math.min(height - 1, Math.max(0, y));
+      return magnitudes[cy * width + cx];
+    };
+    const out = new Float64Array(magnitudes.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        const m = magnitudes[i];
+        const angle = angles[i];
+        let n1, n2;
+        if (angle < 22.5 || angle >= 157.5) { n1 = sample(x - 1, y); n2 = sample(x + 1, y); }
+        else if (angle < 67.5) { n1 = sample(x - 1, y - 1); n2 = sample(x + 1, y + 1); }
+        else if (angle < 112.5) { n1 = sample(x, y - 1); n2 = sample(x, y + 1); }
+        else { n1 = sample(x + 1, y - 1); n2 = sample(x - 1, y + 1); }
+        out[i] = (m >= n1 && m >= n2) ? m : 0;
+      }
+    }
+    return out;
+  }
+
+  // Canny-style dual-threshold ("hysteresis") edge selection: pixels at or
+  // above highThreshold are kept unconditionally ("strong" edges); pixels
+  // at or above lowThreshold are kept only if connected (8-neighbor,
+  // transitively through other weak pixels) to a strong edge, and dropped
+  // otherwise. Fixes the isolated single-pixel specks a single global
+  // threshold leaves scattered across textured photos (fur, grain) without
+  // erasing genuine edges that dip briefly below the main threshold - see
+  // JOURNEY.md for real speck counts before/after on the test photos.
+  function hysteresisThreshold(magnitudes, width, height, highThreshold, lowThreshold) {
+    const total = width * height;
+    const strong = new Uint8Array(total);
+    const weak = new Uint8Array(total);
+    for (let i = 0; i < total; i++) {
+      if (magnitudes[i] >= highThreshold) strong[i] = 1;
+      else if (magnitudes[i] >= lowThreshold) weak[i] = 1;
+    }
+    const out = new Float64Array(total);
+    const stack = [];
+    for (let i = 0; i < total; i++) {
+      if (strong[i]) { out[i] = 1; stack.push(i); }
+    }
+    while (stack.length) {
+      const i = stack.pop();
+      const x = i % width;
+      const y = (i - x) / width;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const sx = x + dx;
+          const sy = y + dy;
+          if (sx < 0 || sx >= width || sy < 0 || sy >= height) continue;
+          const ni = sy * width + sx;
+          if (weak[ni] && !out[ni]) { out[ni] = 1; stack.push(ni); }
+        }
+      }
+    }
+    return out;
+  }
+
+  // A light 3x3 box blur over a greyscale RGBA buffer, returned as a new
+  // same-shaped buffer (all three color channels set to the blurred value,
+  // alpha opaque) so it's a drop-in replacement anywhere the original
+  // buffer was used - in particular, as sobelGradient's own input. This is
+  // the standard noise-reduction pre-step real edge detectors (Canny and
+  // friends) apply before computing a gradient: raw Sobel reacts to a
+  // single noisy/compressed pixel exactly as readily as to a genuine
+  // edge, and blurring first suppresses the former far more than the
+  // latter (see Hand-drawn style's "Reduce noise" option in script.js,
+  // and JOURNEY.md for the real photo this was calibrated against).
+  // Like a box blur, but each neighbor's contribution is weighted by BOTH
+  // its spatial distance (a Gaussian on pixel offset, sigmaSpatial) AND how
+  // close its brightness is to the center pixel's (a Gaussian on
+  // brightness difference, sigmaRange) - so a spatially-near neighbor with
+  // very different brightness (a real edge) barely counts toward the
+  // average, while a similar-brightness neighbor (texture noise) still
+  // gets smoothed away normally. A box blur can't make that distinction:
+  // it softens real structure and texture noise equally. On the tiger
+  // photo that cost real facial detail even while it cleaned up fur
+  // texture (see JOURNEY.md); a bilateral filter targets the texture
+  // "Reduce noise" is meant to remove without softening the structure
+  // "Trace outline first" is trying to preserve. Default radius/sigmas
+  // are the values that validated best against this project's real test
+  // photos, not arbitrary - see JOURNEY.md for the comparison.
+  function bilateralBlurLuminance(data, width, height, radius = 2, sigmaSpatial = 1.5, sigmaRange = 30) {
+    const spatialWeights = [];
+    for (let dy = -radius; dy <= radius; dy++) {
+      const row = [];
+      for (let dx = -radius; dx <= radius; dx++) {
+        row.push(Math.exp(-(dx * dx + dy * dy) / (2 * sigmaSpatial * sigmaSpatial)));
+      }
+      spatialWeights.push(row);
+    }
+    const out = new Uint8ClampedArray(data.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const centerValue = data[rgbaOffset(x, y, width)];
+        let sum = 0;
+        let weightSum = 0;
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            const sx = Math.min(width - 1, Math.max(0, x + dx));
+            const sy = Math.min(height - 1, Math.max(0, y + dy));
+            const value = data[rgbaOffset(sx, sy, width)];
+            const rangeDiff = value - centerValue;
+            const weight = spatialWeights[dy + radius][dx + radius] * Math.exp(-(rangeDiff * rangeDiff) / (2 * sigmaRange * sigmaRange));
+            sum += value * weight;
+            weightSum += weight;
+          }
+        }
+        const v = sum / weightSum;
+        const o = rgbaOffset(x, y, width);
+        out[o] = v;
+        out[o + 1] = v;
+        out[o + 2] = v;
+        out[o + 3] = 255;
+      }
+    }
+    return out;
   }
 
   // --- Adaptive detail (ASCII mode) -----------------------------------
@@ -300,10 +445,20 @@
   // whose overall ink density is wildly different from the patch's own
   // brightness needs to lose even when its shape happens to correlate
   // well, hence the blend rather than NCC alone.
-  function matchGlyph(imagePatch, glyphAtlas, structureWeight) {
+  //
+  // `overrideMeanInk`, when provided (not undefined - 0 is a legitimate
+  // real value, hence `??` not `||`), replaces the patch's own measured
+  // mean ink for the brightness term only, while shape matching still
+  // reads the patch's real, unmodified pixels. This is what
+  // quantizeInk() below feeds in for the "Simplify tones" control -
+  // letting several genuinely-similar cells share one forced-identical
+  // brightness target (and therefore, usually, the same glyph) without
+  // touching the structure term at all.
+  function matchGlyph(imagePatch, glyphAtlas, structureWeight, overrideMeanInk) {
     const normalizedPatch = normalizeInkPatch(imagePatch);
     const range = glyphAtlas.maxInk - glyphAtlas.minInk || 1e-9;
-    const patchMeanInk = glyphAtlas.minInk + meanInk(imagePatch) * range;
+    const rawMeanInk = overrideMeanInk ?? meanInk(imagePatch);
+    const patchMeanInk = glyphAtlas.minInk + rawMeanInk * range;
     let best = null;
     for (const glyph of glyphAtlas) {
       let structureScore = 0;
@@ -313,6 +468,29 @@
       if (!best || score > best.score) best = { char: glyph.char, score };
     }
     return best;
+  }
+
+  // Quantizes a raw mean-ink value (0-1) into `levels` evenly-spaced,
+  // absolute-value buckets across [minObserved, maxObserved] - THIS
+  // image's own real per-cell mean-ink range, not the theoretical 0-1
+  // range or a rank/percentile stretch (that was tried and rejected: see
+  // JOURNEY.md - rank-based remapping manufactures precision that isn't
+  // really there and introduces banding on already-fine illustrations).
+  // Absolute-value bucketing only merges cells that are ALREADY close in
+  // real brightness, so it can't invent contrast where none exists - it
+  // can only make genuinely-similar cells share an identical, forced
+  // brightness target (and therefore usually the same matched glyph),
+  // consolidating what would otherwise be a noisy, cell-by-cell flicker
+  // among several near-tied glyphs into a coherent, repeated run.
+  // `levels` of 0 (or any falsy value) is the explicit "off" sentinel -
+  // returns the value unchanged, matching every existing matchGlyph
+  // caller's behavior exactly.
+  function quantizeInk(value, minObserved, maxObserved, levels) {
+    if (!levels) return value;
+    const range = maxObserved - minObserved || 1e-9;
+    const t = (value - minObserved) / range;
+    const bucket = Math.max(0, Math.min(levels - 1, Math.floor(t * levels)));
+    return minObserved + ((bucket + 0.5) / levels) * range;
   }
 
   // Levels adjustment applied before dithering/ramp-mapping: brightness is
@@ -547,10 +725,17 @@
     asciiRampExtended,
     luminanceToChar,
     sobelGradient,
+    sobelMagnitude,
+    edgeAngle,
     edgeChar,
+    nonMaxSuppress,
+    hysteresisThreshold,
+    bilateralBlurLuminance,
     computeComplexityMap,
     buildGlyphAtlas,
     matchGlyph,
+    meanInk,
+    quantizeInk,
     adjustLevels,
     computeImageStats,
     suggestLevels,

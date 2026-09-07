@@ -851,3 +851,680 @@ palette controls are meaningless once glyphs are chosen by shape rather
 than by looking them up in a ramp - so those fields hide, too, exactly
 the same pattern `applyRenderModeVisibility()` already used for
 mode-specific fields.
+
+## Phase 10: Chasing the tiger photo - three fixes tried, one real answer found
+
+Phase 9 shipped Hand-drawn style with an honestly-documented limitation:
+a heavily-textured, high-contrast photo (`high contrast tiger.png`)
+rendered as a dense, illegible block, unlike the illustrations that
+validated the feature. This phase is the story of three different,
+genuinely-tried fixes for that limitation - all scratchpad-only, nothing
+shipped - and what actually turned out to be true once each was tested
+against the real photo instead of just reasoned about.
+
+**Research first, hitting the sandbox's egress wall again.** Asked what
+prior work exists on this exact problem. Found the real academic lineage:
+Xu et al.'s 2010 "Structure-based ASCII art" (already the basis for this
+feature) has two direct follow-ups by an overlapping author group - "ASCII
+Art Synthesis from Natural Photographs" (IEEE TVCG, 2017) and "Texture-
+aware ASCII art synthesis with proportional fonts" (2015) - both aimed at
+exactly this failure mode: extracting real structure from natural photos
+without texture drowning it out. Every one of these (Semantic Scholar,
+IEEE Xplore, ResearchGate, and later a CUHK faculty page and a SlideServe
+deck) was blocked by this sandbox's egress proxy - the same blanket
+non-GitHub block found in Phase 9's JavE research, now confirmed across a
+much wider set of domains. A user-uploaded PDF turned out to be a
+*different* paper than the one being chased (Akiyama's "ASCII Art
+Synthesis with Convolutional Networks", NIPS 2017) - a CNN trained on
+real BBS-sourced ASCII art, but for a different sub-problem (character
+selection from an already-extracted line drawing, not tone-based photo
+rendering). Its related-work section still earned its keep: it corrected
+an earlier web-search summary that had attributed "non-CRF modulation" to
+the 2017 TVCG paper - the paper's own actual technique, per this
+secondary source, is multi-orientation phase congruency via an extended
+Gabor filter. Worth remembering: a search engine's synthesized summary of
+a paper is not the paper, and a secondary source that actually cites it
+correctly is worth more than three search snippets that don't quite agree
+with each other.
+
+**Attempt 1: non-CRF-style surround suppression.** Since the real papers
+were unreachable, built a good-faith reimplementation of the general,
+well-documented technique they build on (Grigorescu et al. 2003's
+non-classical-receptive-field surround suppression for contour
+detection): isolated edges survive, edges embedded in dense surrounding
+texture get inhibited. Implemented as an isotropic annulus-average
+suppression via a summed-area table for O(1) box queries at any radius,
+deliberately simplified from the real oriented/anisotropic model and
+disclosed as such in the prototype's own comments.
+
+Before even testing the idea, found a real bug in the *test harness
+itself*: the prototype's character-grid aspect-ratio formula divided by
+`patchWidth/patchHeight` (≈0.556) instead of multiplying by the app's
+actual `asciiCharAspect` (0.55) - two numerically similar but backwards
+operations, numerically close enough to not immediately look wrong, that
+inflated the tiger's test grid to 175 rows instead of the correct ~60,
+badly distorting the image regardless of what algorithm ran on it. Fixed
+across all three affected scratchpad scripts before drawing any
+conclusion from them - a reminder that a scratchpad prototype's own
+plumbing needs the same "don't guess, verify" discipline as shipped code,
+just at lower stakes.
+
+With the grid fixed, tested three variants side by side on the tiger
+(shipped binary complexity gate, a non-CRF binary gate, a smooth non-CRF
+blend): all three were visually indistinguishable, still an illegible
+wall of dense characters. Isolating further - pure brightness matching
+alone (`structureWeight = 0`, no NCC/structure influence whatsoever)
+produced the same wall. **That ruled out texture/structure confusion
+entirely** - this was never the problem non-CRF was built to solve.
+
+**Finding the real symptom, by comparing against what already works.**
+The plain ramp-based ASCII mode, on the identical image and the identical
+100x60 grid, renders a clearly recognizable tiger face. Comparing the two
+approaches on the exact same per-cell brightness data (not just the
+screenshots) found the actual mechanism: `matchGlyph`'s brightness
+scoring is a nearest-neighbor match against each glyph's *raw* ink
+density, and the Hand-drawn charset's achievable ink range has a real
+gap - four characters (`W`, `@`, `B`, `M`) all cluster within 0.007 of
+each other at the dense end, with nothing between them and the next-
+lightest character 0.03 away. Roughly a quarter of this photo's pixels
+are genuinely very dark (confirmed from the real luminance histogram),
+so a wide range of distinct dark-tail brightness values were all
+nearest-matching onto that one tight cluster - collapsing exactly the
+contrast needed to see the animal's dark facial features. This looked
+like a clean, well-understood, fixable bug.
+
+**Attempt 2: rank-based brightness scoring.** Reused the plain ramp's own
+working idea - `luminanceToChar` assigns an *index* into an evenly-spaced
+array, which by construction can never collapse two different brightness
+levels onto the same crowded cluster the way nearest-ink-density matching
+can. Built `matchGlyphRank`: pre-sort the glyph atlas by ink density,
+assign each patch a target rank via the same `floor(v * n)` formula
+`luminanceToChar` uses, and score brightness by rank-distance instead of
+ink-distance. Verified the atlas rescaling and rank math directly against
+the real 70-character set before rendering anything (confirmed evenly-
+distributed, non-clustered target ranks) - and it still rendered the
+tiger as an illegible wall, at every structure weight tried, including
+pure rank-based brightness alone. It also *regressed* the truck photo
+(one of Phase 9's validated good cases) into something new and worse.
+**A rigorous, well-motivated fix, cleanly falsified by the same
+photo it was built for and a working case it broke instead.**
+
+**Attempt 3: charset curation.** Rasterized the full 95-character
+printable ASCII range (not just the existing 70-character Hand-drawn
+set) to search for a genuinely better-spaced subset. This surfaced a
+fact worth remembering on its own: **no printable ASCII character in this
+font, at this cell size, achieves more than ~34% ink coverage** - the
+character-based ceiling is real and hard, unrelated to which 70 (or 95)
+characters get chosen. The full pool's darkest end is just as clustered
+as the curated 70's (`R` at 0.307, then `W`/`@`/`B`/`M`/`N` all crammed
+into 0.331-0.339) - there simply aren't more distinct dense glyphs to
+choose from. Built a curated 25-character set via greedy minimum-gap
+selection (walk the sorted pool, keep a candidate only once it's ≥0.010
+ink-density away from the last kept one, always keep the single darkest
+as a ceiling anchor) and re-rendered the tiger with the shipped matching
+logic. Still an illegible wall.
+
+**The actual answer, found by checking the data one layer deeper.**
+Before concluding rank-based scoring simply doesn't work, dumped the
+real character-usage histogram it produced against the tiger's 6000
+cells: a smooth, well-distributed spread across dozens of different
+letters (`@` 671, `W` 310, `B` 240, `Q`/`Y` 139 each, tapering gradually
+down through `a`, `p`, `n`, `z`, `t`... to single digits at the light
+end). The *data* was correctly rank-preserving - there was no collapse
+left to fix. Yet the *rendered image* still looked like undifferentiated
+noise. That combination - correct data, illegible picture - means the
+bottleneck was never in the scoring math at all: **a small hand-curated
+tone ramp (`@%#*+=-:. `) reads as visually distinct shades because those
+exact ten symbols were chosen, over decades of ASCII-art convention, for
+perceived tonal weight at a glance - not because of their measured ink
+density.** A wall of real dictionary characters (`W`, `B`, `Q`, `a`, `&`,
+chosen for shape variety because structure-matching needs many different
+silhouettes to match against) doesn't carry that same clean visual-weight
+signal, no matter how correctly its underlying brightness data is
+ordered. Rank-preserving math and perceptual tonal legibility turned out
+to be two different properties - fixing the first doesn't buy the second.
+
+**Where this leaves the tiger case.** Three different, real attempts
+(non-CRF-style texture gating, rank-based brightness scoring, charset
+curation) were each properly tested against the actual failing photo
+rather than reasoned about in the abstract, and each was honestly
+falsified by that test rather than declared a win on theory. The
+underlying limitation looks structural, not a tuning problem: shape-
+diverse structure matching and small-ramp tonal legibility appear to be
+in real tension for a character set trying to do both jobs at once. No
+code shipped from this phase - Hand-drawn style remains exactly as
+Phase 9 left it, with its known limitation now backed by three ruled-out
+explanations instead of one open question.
+
+**Lessons worth keeping:**
+- **A scratchpad prototype's own bugs can look exactly like the
+  phenomenon you're trying to study.** The aspect-ratio bug in the non-CRF
+  harness produced a badly-distorted grid that would have looked like
+  "the algorithm fails on this photo" if not caught before drawing
+  conclusions - the fix (matching the real app's `asciiCharAspect`
+  formula, verified against the app's own actual grid dimensions for the
+  same image) came from checking the harness against ground truth, not
+  from staring harder at the output.
+- **A negative result reached the same way as a positive one is still
+  worth exactly as much.** Three fixes, three real tests against the
+  actual failing photo, three honest falsifications - none of them
+  wasted effort, because each one closed off a specific, previously-live
+  hypothesis (texture confusion, ink-density collapse, poor charset
+  spacing) rather than leaving it as vague, unresolved suspicion.
+- **Well-distributed data and a legible rendering are not the same
+  claim.** The rank-based fix's histogram was correct by every measure
+  checked - yet the image it produced was still illegible. Checking "is
+  the data right" and "does the picture look right" are two different
+  verification steps, and this project's own working process (a real
+  browser/output pass, not just checking the numbers) is exactly the
+  discipline that caught the gap between them here.
+- **A secondary source that gets the citation right beats three search
+  snippets that don't agree.** The Akiyama paper wasn't the one being
+  looked for, but its related-work section's specific, attributed claim
+  ("Xu et al. 2017 used multi-orientation phase congruency") corrected a
+  vaguer, likely-conflated web-search summary from earlier in the same
+  investigation - worth more than the search that originally produced it.
+
+**Addendum: getting the actual foundational paper, and what it confirms.**
+After this phase's investigation, the user found and uploaded the real
+Xu, Zhang, and Wong 2010 "Structure-based ASCII Art" paper directly (the
+one this whole feature already credits as "a simpler relative of") - the
+egress block that stopped every other attempt this session doesn't apply
+to a file handed over directly. Reading it in full clarified something
+today's three attempts had been quietly assuming rather than checking:
+**academic "structure-based ASCII art," as this field defines it, is a
+line-drawing-to-character problem, not a photograph-to-character one.**
+Their actual pipeline vectorizes a line drawing into polylines, then
+iteratively *deforms* those polylines via simulated annealing so they
+match available character shapes better, then substitutes characters -
+there is no step anywhere that takes a raw continuous-tone photograph's
+pixels and shape-matches them directly the way Hand-drawn style's
+`matchGlyph` does. Every example in the paper (a dragon, a temple, a
+train) is a pure line tracing, not a shaded/toned image - much closer to
+this app's existing "Edges" mode than to "ASCII" mode. That reframes
+today's whole investigation: Hand-drawn style was trying to fuse two
+problems the actual literature keeps separate (continuous tone and shape
+matching) into one per-cell greedy decision, which may be a harder
+problem than either half alone.
+
+More directly useful: the paper's own Limitations section, from a method
+with real shape deformation and a proper alignment-insensitive shape
+metric (log-polar histograms, far more sophisticated than this feature's
+NCC), states plainly - *"the extremely limited variety of characters...
+[m]ost font sets do not contain characters representing a rich variety of
+slopes of lines. This makes certain patterns very hard to be faithfully
+represented."* That is an independent, academic confirmation of exactly
+today's charset-curation finding (no printable ASCII character exceeds
+~34% ink coverage, and the dense end is unavoidably clustered) - not
+from three tuning attempts, but from the actual state of the art
+admitting the same ceiling. Worth remembering the plain lesson here: when
+a primary source is finally reachable, it doesn't just answer the
+question that sent you looking for it - it can tell you the question
+itself was aimed at the wrong pipeline.
+
+## Phase 11: The real 2015 paper, a fourth attempt, and the fix that was never going to work
+
+Getting the 2015 follow-up paper (Xu, Zhong, Xie, Qin, Chen, Jin, Wong,
+Han, "Texture-Aware ASCII Art Synthesis with Proportional Fonts", NPAR/
+Expressive 2015) took two more tries - a 101 MB "save whole page" export
+was too large to upload, and a second upload turned out to be the same
+2010 paper again by mistake - before the actual PDF came through. It was
+worth the wait: unlike the 2010 paper, this one operates directly on
+real photographs (not pre-vectorized line art), which is exactly the
+problem Hand-drawn style is trying to solve.
+
+**An independent, academic confirmation of the exact failure this project
+found empirically.** The paper's own user study (Table 1) scores the
+2010 method - fixed-width character matching, architecturally close to
+what Hand-drawn style does - on real photos: 6.26/6.12/5.86
+(similarity/recognition/aesthetics) vs. **8.72/8.61/8.46** for their new
+method, which slightly *exceeds* the human-artist baseline (8.63) on
+photos specifically. Their own stated reason: *"the fixed-width font
+cannot well represent a variety of structures in natural images."* That
+is a controlled, academic reproduction of the tiger's exact failure mode,
+arrived at independently of anything tried here.
+
+**The actual fix has two parts, and only one is usable here.** (1) A
+dynamic-programming-optimized *proportional font* placement - solving
+character width and position jointly rather than a fixed grid. Real
+contributor to their result, but structurally inapplicable: asciify's
+entire premise is monospace output that pastes into any plain-text
+surface, so adopting proportional fonts isn't an option to chase, just a
+ceiling to know about. (2) *Multi-orientation phase congruency that keeps
+a vector, not a sum*: standard phase congruency (and, for that matter,
+the earlier non-CRF attempt) collapses edge energy across all
+orientations into one scalar, which over-emphasizes isotropic texture -
+many orientations each contributing a little can sum to a lot. Their fix
+keeps six separate per-orientation energy values; a real contour
+concentrates energy in one orientation, while texture spreads it evenly
+across all six.
+
+**Attempt 4: orientation-dominance gating.** Implemented a good-faith,
+disclosed simplification of part (2) - a bank of six oriented Gabor
+magnitude filters (spatial-domain, single scale, standing in for the
+paper's actual multi-scale log-Gabor phase-congruency computation, which
+needs FFT machinery this prototype doesn't have) - and used each cell's
+"dominance" (top orientation's share of total energy, vs. the 1/6
+isotropic baseline) as a replacement busy-cell gate, same architecture as
+the non-CRF attempt but with an orientation-aware signal instead of an
+isotropic one.
+
+Verified the discriminator actually worked before judging the result:
+median dominance on the tiger was 0.213 against a 0.167 isotropic
+baseline, and 95% of cells were correctly classified as "not real
+structure" (texture, not contour) - a working signal, not a bug. Yet the
+rendered tiger was still an illegible wall, structurally the same result
+as every earlier attempt. Truck.jpg (the known-good case) still rendered
+cleanly, confirming no regression - the gate itself is sound.
+
+**Why this negative result was actually predictable, and a lesson about
+not re-testing an already-isolated variable.** Phase 10 had already run
+the one test that made this outcome foreseeable: pure brightness matching
+alone (`structureWeight = 0`, meaning the *gate's* value cannot possibly
+change the output) still rendered the tiger as an illegible wall. That
+result means the busy-cell gate - whatever signal drives it, however
+sophisticated - was never capable of fixing this image's failure, because
+the brightness term alone already fails independent of any gating
+decision. Non-CRF (Phase 10, attempt 1) and orientation-dominance
+(this phase) are two different, genuinely more sophisticated texture
+discriminators than a plain complexity threshold - and both were testing
+the same already-ruled-out variable (how the gate decides between
+structure and brightness weighting) rather than the actual bottleneck
+(the brightness term's own nearest-ink-density collapse at the charset's
+clustered dense end, found in Phase 10). The lesson: once a variable is
+shown not to matter (here, via the weight=0 test), that finding applies
+to the whole family of fixes that only act through that variable, not
+just the one version already tried - re-testing a fancier version of an
+already-eliminated mechanism costs real implementation and Gabor-filter
+compute time for a result the earlier isolation had already implied.
+
+**Where this leaves things.** Four attempts across two phases (non-CRF
+gating, rank-based brightness, charset curation, orientation-dominance
+gating) have now been tried and honestly falsified against the same real
+photo. The 2015 paper's own architecture succeeds specifically by
+combining phase congruency *with* proportional-font placement - and the
+proportional-font half is the one piece that doesn't transfer to a
+monospace-output tool. That is a legitimate, externally-validated reason
+this specific problem may not have a fix available within asciify's own
+constraints, rather than a fix nobody has found yet.
+
+## Phase 12: A fifth attempt, and closing the tiger investigation
+
+One idea from this whole arc had never actually been tested: build the
+Hand-drawn charset from *empirical frequency* in real hand-made ASCII art
+(already sitting in `test-assets/*.txt` - four pieces from
+asciiart.website, confirmed hand-drawn back in this project's early
+research) instead of deriving it from measured ink-density math. Unlike
+the four fixes in Phases 10-11, all of which acted on the busy-cell gate
+(already shown incapable of fixing this photo, since pure brightness
+alone fails regardless of gating), this one changes a genuinely different
+lever - which characters exist in the set at all.
+
+Built a 60-character glyph atlas from every character that actually
+appears across the four real files (not just the dominant 11), rasterized
+in the app's real font at the same cell size as the shipped feature.
+Checked the achievable ink range before rendering anything: **the
+densest real character these artists ever used tops out at 0.30 mean
+ink - lower than the existing 70-character set's 0.34 ceiling.** That's
+consistent with the material itself: hand-drawn line art has no reason to
+reach for dense, block-like letters (M, W, B, @), so a charset built
+purely from that material inherits an even lower dark-tail ceiling than
+the one already identified as the tiger's root cause.
+
+Rendered anyway, rather than trusting that prediction. Result: the tiger
+was still an illegible wall, if anything more uniform (heavier `#`/`0`/`H`
+concentration, consistent with the lower ceiling forcing even more
+distinct dark tones to collapse onto fewer characters). More
+importantly, **the truck - the known-good case every other attempt this
+session left untouched - visibly regressed**: horizontal banding
+artifacts running through the whole image, worse than the shipped
+70-character set. Excluding every character absent from a 4-piece sample
+also excluded real, useful mid-tone shapes (several letters and
+punctuation marks) that the shipped set relies on for illustrations,
+not just photos. A charset that's empirically "authentic" to a small
+real sample isn't automatically better for structure matching in
+general - it's only as good as what that sample happened to need.
+
+**Closing this out.** Five attempts, two research phases, one paywalled-
+then-obtained academic paper, and a clean regression on the one thing
+every earlier attempt had protected (the known-good illustrations) - all
+converging on the same conclusion Phase 10 first found and Phase 11's
+external validation confirmed: Hand-drawn style's tiger-photo failure is
+rooted in the brightness term's own dark-tail collapse against a
+necessarily-limited character set, not in texture handling, brightness
+scoring, curated spacing, orientation-aware gating, or charset
+provenance. The real fix (phase congruency plus proportional-font
+placement, per the 2015 paper) needs an architectural piece - variable-
+width characters - that this project cannot adopt without giving up its
+core "pastes into any plain-text surface" premise. Hand-drawn style
+ships as-is, with this limitation now understood rather than merely
+observed: five specific, real hypotheses ruled out by name, not just a
+vague "photos with heavy texture don't work well" note.
+
+## Phase 13: "Simplify tones" - the sixth attempt, and the first real win
+
+The user reopened the closed investigation with a genuinely different
+framing: *"find a way to simplify the image first, then attempt to
+convert to ASCII."* Worth distinguishing from what five earlier attempts
+already covered before building anything: a global tone remap (the
+rank-based attempt) and per-cell texture/structure gating (non-CRF, phase
+congruency) were both tried and fell to the same root cause. The one
+untested piece of "simplify first" was *spatial consolidation* -
+forcing genuinely-similar-toned neighboring cells to share an identical
+brightness target, on the theory that part of the tiger's illegibility
+isn't just "too few dark characters" in the abstract, but that
+neighboring cells within what should read as one coherent dark region
+(the fur) were each independently picking among several near-tied glyphs
+based on tiny pixel noise - producing a scattered, inconsistent mix
+instead of a repeated, eye-readable block.
+
+**Prototyped first, as always.** Quantized each cell's raw mean ink into
+a small number of buckets spanning THIS image's own observed range
+(deliberately absolute-value bucketing, not the rank-based attempt's
+percentile stretch - rank normalization manufactures precision that
+isn't really there, which is what caused that attempt's truck banding;
+absolute bucketing can only merge cells that are already close in real
+brightness, never invent contrast where none exists). At 8 buckets, the
+tiger showed something none of the previous five attempts produced:
+visible coherent blocks and a distinguishable eye-like shape near the
+top - a real, visible qualitative change, not just a different-looking
+wall of noise.
+
+**But it regressed the truck** - the one thing every earlier attempt had
+left untouched. Gating the quantization to only "busy" cells (reusing
+the existing complexity threshold) didn't fix it: 68.7% of the truck's
+own cells are *also* classified busy by that measure, so the gate barely
+protected anything. Trying a gentler 16-bucket setting softened but
+didn't eliminate the truck's degradation, while also shrinking the
+tiger's benefit - confirming this is a genuine dial, not a threshold to
+tune once and forget. **First real partial win in six attempts, with an
+honest, unavoidable trade-off attached.**
+
+**Decision, put to the user rather than made silently**: ship it as a
+new user-adjustable control ("Simplify tones") rather than a new fixed
+default, since no single setting serves both a clean illustration and a
+heavily-textured photo well. Implementation:
+- `quantizeInk(value, minObserved, maxObserved, levels)` in `dither.js` -
+  pure, tested logic, `0` levels is an explicit off sentinel rather than
+  a very-high-number stand-in, so the default path is a real, separate
+  code branch (`if (!levels) return value`), not an approximation of one.
+- `matchGlyph` gained an optional fourth `overrideMeanInk` parameter
+  (`??`, not `||` - 0 is a legitimate real value, not "not provided").
+  It replaces the brightness target only; shape matching still reads the
+  cell's own real pixels, unmodified. Every existing call site is
+  unaffected since the parameter defaults to `undefined`.
+- The slider's own maximum value (32) IS the off sentinel, and the
+  default - a real photo pass confirmed the render is unaffected until a
+  user actually moves it down.
+- Quantization only ever touches cells the existing complexity gate
+  already calls "busy" - confirmed by testing, not assumed, that turning
+  it off leaves illustrations exactly as validated in Phase 9.
+- One bug caught in review before shipping, not by a test failing:
+  background-masked cells (Suppress background) were being included in
+  the bucket range computation despite never reaching `matchGlyph` -
+  wasting buckets on content that renders as blank space instead of
+  spending all of them on the subject's own real range. Fixed by
+  excluding background-masked cells from the min/max scan, the same
+  `isBackgroundPixel` check the render loop itself already uses.
+
+**Where this leaves the tiger case, honestly**: "Simplify tones" is a
+real, tested improvement a user can reach for on a difficult photo - not
+a fix that makes Hand-drawn style's known limitation disappear. At its
+most aggressive setting the tiger still doesn't read as fully
+photorealistic; it reads as a more *coherent* rendering than before,
+which is a genuinely different and better place to leave this than five
+attempts that changed nothing. The underlying ceiling from Phases 10-12
+(a monospace character set's achievable dark-tail resolution) is still
+exactly what it was - this control works around part of its effect
+without touching the ceiling itself.
+
+**Lesson worth keeping**: a "closed" investigation is closed against the
+hypotheses actually tested, not against every possible framing of the
+problem. Five falsified attempts earned real confidence that texture
+handling, brightness scoring, charset spacing, and orientation gating
+weren't the answer - but "simplify first" turned out to name a mechanism
+(spatial consolidation) genuinely outside that set, and reopening on a
+specific, testable new idea rather than a vague "try harder" is what
+made it worth the hour rather than a repeat of the same five results.
+
+## Phase 14: "Trace outline first" - the actual academic pipeline, finally tried
+
+The user proposed a third reopening, even more specific than Phase 13's:
+generate a black-outline version of the photo first, then match
+characters against *that* instead of the raw image - and asked directly
+whether that needs an image-generation model. It doesn't, and saying so
+plainly mattered: outline/edge extraction is the same deterministic pixel
+math this project's own Edges mode already does (Sobel gradients), not
+generative AI. More importantly, this is *literally* the real academic
+pipeline Phase 11's addendum already found and didn't act on: Xu et al.
+2010 vectorizes a line drawing first, then matches characters to that -
+every attempt in Phases 10-13, including the otherwise-successful
+"Simplify tones," still matched characters against raw continuous-tone
+pixels. This was the one big structural piece nobody had actually tried.
+
+**Prototyped it, and it worked better than anything else this
+investigation produced.** Extracted a binary (pure black/white) edge map
+via the existing `sobelGradient`, thresholded, then fed THOSE binary
+patches into the unchanged `matchGlyph`/NCC machinery instead of
+ink-density patches. At threshold 0.15 (normalized), the tiger's ears,
+eyes, and muzzle became clearly recognizable for the first time in five
+prior attempts - not "more coherent than before," genuinely readable as
+a tiger face. The mechanism is exactly why: a binary source has no
+continuous brightness to collapse, so Phase 10's root cause (the
+charset's clustered dark-tail ceiling) simply doesn't apply to it.
+
+**Real trade-offs, tested rather than assumed away:**
+- A higher threshold (0.25) cleaned up the truck's edge noise but lost
+  most of the tiger's structure - fur/contour edges are inherently
+  lower-contrast than the truck's crisp painted panel lines, so any
+  single threshold that suppresses one suppresses the other.
+- Blurring before edge detection (the standard noise-reduction pre-step
+  real edge detectors like Canny use) meaningfully cleaned up the
+  truck's JPEG/surface-texture noise, but softened the tiger's fur edges
+  enough to lose some of the facial clarity the unblurred version had.
+
+Two real, independently-useful dials, not one setting to tune once -
+the same shape of trade-off "Simplify tones" already established a
+pattern for, so both shipped as opt-in controls rather than a forced
+default, decided with the user rather than picked silently.
+
+**What shipped**, all under a new "Trace outline first" checkbox nested
+in Hand-drawn style (hides Simplify tones while active - a continuous
+brightness target has nothing to quantize once the source is already
+binary):
+- `boxBlurLuminance(data, width, height)` in `dither.js` - a plain,
+  tested 3x3 box blur, edge-clamped, returned as a drop-in RGBA-shaped
+  buffer so it composes directly with the existing `sobelGradient`.
+- `computeHandDrawnOutlinePatches()` in `script.js` - mirrors
+  `computeHandDrawnPatches()`'s structure but slices a thresholded
+  binary edge map into patches instead of ink density. Reuses `edgeChar`
+  purely as an "is this pixel's gradient above threshold" test (discards
+  the direction character it returns) rather than duplicating its
+  magnitude-normalization math - one second-order benefit of that reuse:
+  the new "Edge threshold" slider sits on the exact same 0-254 scale as
+  the existing braille/edges Threshold control, for free.
+- A fixed, near-maximum structure weight (0.95) when outline mode is
+  active - there's no meaningful brightness fallback to blend toward
+  once the patch itself already is a shape, and no busy-cell gating
+  decision left to make (confirmed empirically, not assumed).
+- "Reduce noise" checkbox (off by default - the unblurred setting gave
+  the single best tiger result of the whole investigation) applies
+  `boxBlurLuminance` before the Sobel pass.
+
+**Where this leaves the tiger case, genuinely revised from Phase 12's
+close-out**: this is not another partial, honestly-limited improvement -
+it is a real, working fix for legibility on the hardest case this
+project has tested, arrived at by finally building the actual technique
+the academic literature uses instead of a simplification of it. The
+underlying character-set ceiling from Phases 10-12 is still real, and
+"Trace outline first" trades photorealistic tone for structural
+legibility rather than delivering both - but "the tiger's face is
+recognizable" is a materially different and better outcome than every
+prior phase reached.
+
+**Lesson worth keeping, on top of Phase 13's**: two "reopenings" of a
+"closed" investigation in a row each found something real, because each
+named a mechanism (spatial consolidation, then outline-first matching)
+that hadn't actually been tried - not a re-ask of "can you try harder."
+The second reopening in particular succeeded specifically because it
+matched the technique degree-for-degree with a source the project had
+*already read* (Phase 11's Xu 2010 addendum) but not yet acted on -
+sometimes the fix was already sitting in the project's own research
+notes, just not yet connected to the room where the source image gets
+touched.
+
+## Phase 15: Non-maximum suppression + hysteresis - the rest of Canny, and the first fix with no trade-off
+
+Prompted by outside feedback (a user-shared GLSL shader and a written
+description of a full Canny pipeline) pointing out that "Trace outline
+first"'s edge extraction was still just a single global magnitude
+threshold - the crudest possible version of edge detection, missing the
+two steps (thinning, connectivity-based pruning) that separate a raw
+Sobel response from an actual clean line drawing. Declined the specific
+suggestion to do this on the GPU via WebGL (see the PR discussion for
+why: it would make the edge math untestable under `node --test`, and the
+character-matching step needs the result back in JS anyway, so a GPU
+round-trip wouldn't even remove the CPU-side loop) - but the underlying
+algorithmic point stood on its own and was worth testing independent of
+how it was proposed.
+
+**What was actually missing**: a raw Sobel magnitude thresholded at one
+cutoff produces edges several pixels wide (every pixel near a boundary
+exceeds the threshold, not just the one truest edge pixel), and a single
+global threshold either lets isolated noise-driven pixels through or
+cuts off genuine low-contrast edges - there's no way to have both with
+one number. Non-maximum suppression (keep a pixel only if its magnitude
+is the local max along its own gradient direction, else suppress it)
+fixes the first problem. Hysteresis (keep strong edges outright; keep
+weak edges only if 8-connected, transitively, to a strong one) fixes the
+second.
+
+**Prototyped against five real images already used throughout this
+investigation** - the tiger (fur texture, the hardest case), the truck
+(clean illustration, the case every fur-texture fix has previously
+regressed), a dog photo (clear silhouette), a soft-lit portrait (sparse
+edges), and a cluttered desk photo (genuine, not noise-driven, visual
+density) - comparing foreground-pixel count and an objective "isolated
+speck" count (foreground pixels with zero foreground 8-neighbors) before
+and after:
+
+| image | baseline fg / specks | NMS+hysteresis fg / specks |
+|---|---|---|
+| tiger | 29,635 / 195 | 26,274 / **0** |
+| truck | 110,331 / 8 | 42,551 / 8 |
+| dog | 50,180 / 0 | 15,929 / 0 |
+| portrait | 4,726 / 2 | 2,078 / **0** |
+| busy desk | 29,294 / 25 | 20,265 / **0** |
+
+Isolated specks dropped to exactly zero everywhere they existed (hysteresis
+doing precisely what it's supposed to), and thinning cut raw foreground
+pixel counts by roughly 30-65% by collapsing multi-pixel-wide edges down
+to single-pixel ridges - confirmed visually as thinner, crisper lines
+rather than lost detail (most visible on the truck, whose thick doubled
+strokes became clean single-line panel edges). Recognizability held on
+every single image; nothing regressed.
+
+**This is the first idea in this whole investigation (Phases 10-14) that
+didn't trade one image for another.** Every previous fix either helped
+the tiger and hurt the truck, or helped neither. NMS + hysteresis
+improved edge quality in the same direction on all five test images,
+including the two that have anchored every prior trade-off decision -
+which is why, unlike Simplify tones and Trace outline first's own
+threshold/blur controls, this shipped as an unconditional upgrade to the
+existing edge-extraction internals rather than a new opt-in toggle. No
+new UI: the existing "Edge threshold" slider now serves as the
+hysteresis "strong" cutoff, with the "weak but keep if connected"
+threshold fixed internally at half that value (the conventional Canny
+2:1 starting ratio, and close enough to what was actually tuned in
+testing - 0.18/0.08 - not to need its own control).
+
+**What shipped**: `sobelMagnitude`/`edgeAngle` in `dither.js`, factored
+out of `edgeChar`'s existing inline math so the same normalization and
+angle-folding logic backs both the character-picking (`edgeChar`, used
+by Edges mode) and the new pixel-level thinning/pruning functions
+without duplicating the magic numbers twice. `nonMaxSuppress(magnitudes,
+angles, width, height)` and `hysteresisThreshold(magnitudes, width,
+height, highThreshold, lowThreshold)`, both pure array functions
+consistent with everything else in `dither.js`, unit tested directly
+(a five-pixel synthetic ridge for NMS; a small synthetic strong/weak/
+isolated graph for hysteresis's connectivity behavior) rather than only
+through screenshot comparison. `computeHandDrawnOutlinePatches()` in
+`script.js` now runs Sobel → NMS → hysteresis instead of Sobel →
+threshold, with no change to its public behavior (same checkbox, same
+slider, same permalink parameter).
+
+**Lesson**: generic-sounding advice ("here's a Canny pipeline," "here's a
+WebGL shader for this") is worth the same test as anything self-generated
+- not adopted because it sounds sophisticated, not dismissed because it
+arrived as a large unsolicited code dump. The GPU delivery mechanism was
+a genuine mismatch for this codebase's testing architecture and was
+declined; the underlying algorithmic idea (NMS + hysteresis are real,
+well-understood techniques, not this project's own invention) was
+tested the same way every other idea in this investigation was, and this
+time it earned its place with a clean, unconditional win.
+
+## Phase 16: Bilateral filter replaces box blur - a real trade-off, decided rather than assumed
+
+More outside feedback after Phase 15 (a second unsolicited write-up)
+named one more real gap: "Reduce noise" was still a plain 3x3 box blur,
+which can't tell a genuine edge from texture noise apart from raw
+spatial proximity - it softens both equally. That's exactly what Phase
+14 already found and documented as a cost: blurring "cleaned up the
+truck's JPEG/surface-texture noise, but softened the tiger's fur edges
+enough to lose some of the facial clarity." A bilateral filter's whole
+premise is the fix for that specific problem - weight each neighbor by
+BOTH spatial distance and how close its brightness is to the center
+pixel's, so a same-side (texture) neighbor still gets smoothed while a
+far-side (real edge) neighbor barely counts.
+
+**Prototyped it the same way as Phase 15**: box blur, bilateral filter
+(radius 2, sigmaSpatial 1.5, sigmaRange 30), and no blur at all (the
+actual shipped default), each followed by the real Sobel → NMS →
+hysteresis pipeline, across the same 5 test photos:
+
+| image | no blur fg/specks | box blur fg/specks | bilateral fg/specks |
+|---|---|---|---|
+| tiger | 76,046 / 7 | 38,793 / 0 | 46,472 / 0 |
+| truck | 43,569 / 48 | 42,759 / 12 | 43,112 / 50 |
+| dog | 15,797 / 0 | 15,929 / 0 | 15,663 / 0 |
+| portrait | 2,593 / 0 | 2,111 / 0 | 2,584 / 0 |
+| busy desk | 30,066 / 3 | 26,436 / 0 | 28,074 / 2 |
+
+**A genuinely different result shape than Phase 15's clean sweep.** On
+the tiger - the actual reason "Reduce noise" exists - bilateral visibly
+preserved the eyes, muzzle, and ear structure that box blur softened
+away, while still cutting background/texture noise by almost as much
+(46,472 vs 38,793, both down from 76,046 unblurred). But on the other
+four images, box blur was consistently the more aggressive noise
+cleaner; bilateral landed between "no blur" and "box blur" rather than
+beating both. Screenshots of the truck and busy-desk cases, though,
+showed this numeric gap was visually negligible - the renders were
+close to indistinguishable - while the tiger's improvement was
+substantial and immediately visible.
+
+**Flagged rather than decided silently**, since this was a real
+trade-off (unlike Phase 15's unconditional win): asked whether to
+replace box blur outright, offer both as a choice, or leave it. Chose
+to replace it outright - the tiger case is the one this option was
+actually built for and names in its own tooltip ("Can make a
+heavily-textured photo far more recognizable"), the losses elsewhere
+were visually negligible even though numerically real, and a second
+blur-method selector would be UI complexity for a difference nobody
+would likely notice in practice.
+
+**What shipped**: `bilateralBlurLuminance(data, width, height, radius,
+sigmaSpatial, sigmaRange)` in `dither.js` replaces `boxBlurLuminance`
+outright (deleted, not deprecated - it had exactly one caller and that
+caller now uses the new function) with defaults matching the validated
+comparison above. Same call site, same "Reduce noise" checkbox, same
+permalink parameter - purely an internal algorithm swap.
+
+**Lesson, continuing Phase 15's**: not every piece of outside advice
+resolves the same way. Phase 15's suggestion (NMS + hysteresis) tested
+out as a clean, unconditional win and shipped silently as an upgrade.
+This one tested out as a genuine trade-off - better on the one case
+that actually matters for this feature, mildly worse on four others -
+and got a real decision rather than an assumption in either direction:
+neither "sounds like a good idea, ship it" nor "it has some regression,
+skip it," but actually looking at what the regression cost in practice
+before choosing.

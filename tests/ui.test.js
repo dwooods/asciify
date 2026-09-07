@@ -346,6 +346,29 @@ test("the Suppress background info icon toggles a tap/keyboard-accessible popove
   assert.equal(await page.isVisible("#suppressBackgroundInfoPopover"), true);
 });
 
+test("the Hand-drawn style info icon toggles a tap/keyboard-accessible popover", async () => {
+  // Same shared setupInfoPopover() helper as Suppress background's icon -
+  // this exercises the second, independent icon/popover pair it wires up.
+  await loadTestImage();
+  await page.selectOption("#renderMode", "ascii");
+
+  assert.equal(await page.isVisible("#handDrawnStyleInfoPopover"), false);
+  assert.equal(await page.getAttribute("#handDrawnStyleInfoIcon", "aria-expanded"), "false");
+
+  await page.click("#handDrawnStyleInfoIcon");
+  assert.equal(await page.isVisible("#handDrawnStyleInfoPopover"), true);
+  assert.equal(await page.getAttribute("#handDrawnStyleInfoIcon", "aria-expanded"), "true");
+  assert.ok((await page.textContent("#handDrawnStyleInfoPopover")).length > 0);
+
+  await page.click("h1");
+  assert.equal(await page.isVisible("#handDrawnStyleInfoPopover"), false);
+  assert.equal(await page.getAttribute("#handDrawnStyleInfoIcon", "aria-expanded"), "false");
+
+  await page.focus("#handDrawnStyleInfoIcon");
+  await page.keyboard.press("Enter");
+  assert.equal(await page.isVisible("#handDrawnStyleInfoPopover"), true);
+});
+
 test("switching to ASCII mode renders using only the palette's characters", async () => {
   await loadTestImage();
   await page.selectOption("#renderMode", "ascii");
@@ -503,6 +526,176 @@ test("Hand-drawn style round-trips through the settings permalink and resets to 
   await page.waitForTimeout(100);
   assert.equal(await page.isChecked("#handDrawnStyle"), false);
   assert.equal(new URL(page.url()).searchParams.get("handdrawn"), null);
+});
+
+test("Hand-drawn style's Simplify tones control is hidden until enabled, defaults to off, and changes the render", async () => {
+  await page.setInputFiles("#filepicker", photoImagePath);
+  await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await page.selectOption("#renderMode", "ascii");
+  assert.equal(await page.isVisible("#handDrawnDetailField"), false);
+
+  await page.check("#handDrawnStyle");
+  await page.waitForTimeout(150);
+  assert.equal(await page.isVisible("#handDrawnDetailField"), true);
+  assert.equal(await page.textContent("#handDrawnDetailVal"), "off");
+  const before = await page.evaluate(() => document.getElementById("output").innerText);
+
+  await page.fill("#handDrawnDetail", "8");
+  await page.dispatchEvent("#handDrawnDetail", "change");
+  await page.waitForTimeout(150);
+  assert.equal(await page.textContent("#handDrawnDetailVal"), "8 levels");
+  const after = await page.evaluate(() => document.getElementById("output").innerText);
+  assert.notEqual(after, before, "expected lowering Simplify tones to change the render");
+
+  // Unchecking Hand-drawn style hides the control again.
+  await page.uncheck("#handDrawnStyle");
+  assert.equal(await page.isVisible("#handDrawnDetailField"), false);
+});
+
+test("Simplify tones round-trips through the settings permalink and resets to off", async () => {
+  await page.goto(`${baseUrl}/index.html?mode=ascii&handdrawn=1&simplify=10`, { waitUntil: "domcontentloaded" });
+  assert.equal(await page.inputValue("#handDrawnDetail"), "10");
+  assert.equal(await page.textContent("#handDrawnDetailVal"), "10 levels");
+
+  await loadTestImage();
+  const url = new URL(page.url());
+  assert.equal(url.searchParams.get("simplify"), "10");
+
+  await page.click("#resetBtn");
+  await page.waitForTimeout(100);
+  assert.equal(await page.inputValue("#handDrawnDetail"), "32");
+  assert.equal(await page.textContent("#handDrawnDetailVal"), "off");
+  assert.equal(new URL(page.url()).searchParams.get("simplify"), null);
+});
+
+test("an out-of-range simplify permalink parameter is ignored rather than crashing the page", async () => {
+  await page.goto(`${baseUrl}/index.html?mode=ascii&handdrawn=1&simplify=not-a-number`, { waitUntil: "domcontentloaded" });
+  assert.equal(await page.isChecked("#handDrawnStyle"), true);
+  assert.equal(await page.inputValue("#handDrawnDetail"), "32");
+
+  await page.goto(`${baseUrl}/index.html?mode=ascii&handdrawn=1&simplify=999`, { waitUntil: "domcontentloaded" });
+  assert.equal(await page.inputValue("#handDrawnDetail"), "32");
+});
+
+test("Trace outline first is hidden until Hand-drawn style is on, reveals its own controls, and hides Simplify tones", async () => {
+  await page.setInputFiles("#filepicker", photoImagePath);
+  await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await page.selectOption("#renderMode", "ascii");
+  assert.equal(await page.isVisible("#handDrawnOutlineField"), false);
+
+  await page.check("#handDrawnStyle");
+  assert.equal(await page.isVisible("#handDrawnOutlineField"), true);
+  assert.equal(await page.isVisible("#handDrawnOutlineThresholdField"), false);
+  assert.equal(await page.isVisible("#handDrawnOutlineBlurField"), false);
+  assert.equal(await page.isVisible("#handDrawnDetailField"), true);
+
+  await page.check("#handDrawnOutline");
+  await page.waitForTimeout(150);
+  assert.equal(await page.isVisible("#handDrawnOutlineThresholdField"), true);
+  assert.equal(await page.isVisible("#handDrawnOutlineBlurField"), true);
+  // Simplify tones quantizes a continuous brightness target that no
+  // longer exists once the source is already a binary outline.
+  assert.equal(await page.isVisible("#handDrawnDetailField"), false);
+
+  await page.uncheck("#handDrawnOutline");
+  assert.equal(await page.isVisible("#handDrawnOutlineThresholdField"), false);
+  assert.equal(await page.isVisible("#handDrawnDetailField"), true, "unchecking outline mode should restore Simplify tones");
+});
+
+test("Trace outline first changes the render, and its threshold/noise-reduction controls each have an effect", async () => {
+  // render() runs synchronously on toggle and can occasionally take longer
+  // than a fixed wait under load (e.g. the full suite running alongside the
+  // heavy real-model test) - poll for the actual output change instead of
+  // guessing a delay, using the current text as the "not yet updated" value.
+  const waitForOutputChange = (previousText) =>
+    page.waitForFunction(
+      (prev) => document.getElementById("output").innerText !== prev,
+      previousText,
+      { timeout: 5000 },
+    ).then(() => page.evaluate(() => document.getElementById("output").innerText));
+
+  await page.setInputFiles("#filepicker", photoImagePath);
+  await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await page.selectOption("#renderMode", "ascii");
+  await page.check("#handDrawnStyle");
+  await page.waitForTimeout(150);
+  const beforeOutline = await page.evaluate(() => document.getElementById("output").innerText);
+
+  await page.check("#handDrawnOutline");
+  const withOutline = await waitForOutputChange(beforeOutline);
+  assert.notEqual(withOutline, beforeOutline, "expected Trace outline first to change the render");
+  assert.ok(withOutline.replace(/\n/g, "").length > 0, "expected non-empty output");
+
+  // Check Reduce noise's effect at the default threshold (38) before
+  // touching the threshold slider - at a very high threshold, real edges
+  // stop crossing it at all, and comparing two identically-blank renders
+  // wouldn't actually test blur's effect (this bit a first version of
+  // this test: checking blur immediately after a threshold=150 change
+  // compared two all-blank outputs and failed for the wrong reason).
+  await page.check("#handDrawnOutlineBlur");
+  const withBlur = await waitForOutputChange(withOutline);
+  assert.notEqual(withBlur, withOutline, "expected Reduce noise to change the render");
+  await page.uncheck("#handDrawnOutlineBlur");
+  await waitForOutputChange(withBlur);
+
+  await page.fill("#handDrawnOutlineThreshold", "150");
+  await page.dispatchEvent("#handDrawnOutlineThreshold", "change");
+  const withHigherThreshold = await waitForOutputChange(withOutline);
+  assert.notEqual(withHigherThreshold, withOutline, "expected the edge threshold to change the render");
+
+  // Unchecking Trace outline first restores plain Hand-drawn style's render.
+  await page.uncheck("#handDrawnOutline");
+  const restored = await waitForOutputChange(withHigherThreshold);
+  assert.equal(restored, beforeOutline);
+});
+
+test("Trace outline first round-trips through the settings permalink and resets to off", async () => {
+  await page.goto(`${baseUrl}/index.html?mode=ascii&handdrawn=1&outline=1&outlineThreshold=50&outlineBlur=1`, {
+    waitUntil: "domcontentloaded",
+  });
+  assert.equal(await page.isChecked("#handDrawnOutline"), true);
+  assert.equal(await page.inputValue("#handDrawnOutlineThreshold"), "50");
+  assert.equal(await page.isChecked("#handDrawnOutlineBlur"), true);
+
+  await loadTestImage();
+  const url = new URL(page.url());
+  assert.equal(url.searchParams.get("outline"), "1");
+  assert.equal(url.searchParams.get("outlineThreshold"), "50");
+  assert.equal(url.searchParams.get("outlineBlur"), "1");
+
+  await page.click("#resetBtn");
+  await page.waitForTimeout(100);
+  assert.equal(await page.isChecked("#handDrawnOutline"), false);
+  assert.equal(await page.inputValue("#handDrawnOutlineThreshold"), "38");
+  assert.equal(await page.isChecked("#handDrawnOutlineBlur"), false);
+  assert.equal(new URL(page.url()).searchParams.get("outline"), null);
+});
+
+test("an out-of-range outlineThreshold permalink parameter is ignored rather than crashing the page", async () => {
+  await page.goto(`${baseUrl}/index.html?mode=ascii&handdrawn=1&outline=1&outlineThreshold=not-a-number`, {
+    waitUntil: "domcontentloaded",
+  });
+  assert.equal(await page.isChecked("#handDrawnOutline"), true);
+  assert.equal(await page.inputValue("#handDrawnOutlineThreshold"), "38");
+
+  await page.goto(`${baseUrl}/index.html?mode=ascii&handdrawn=1&outline=1&outlineThreshold=9999`, {
+    waitUntil: "domcontentloaded",
+  });
+  assert.equal(await page.inputValue("#handDrawnOutlineThreshold"), "38");
+});
+
+test("the Trace outline first info icon toggles a tap/keyboard-accessible popover", async () => {
+  await loadTestImage();
+  await page.selectOption("#renderMode", "ascii");
+  await page.check("#handDrawnStyle");
+
+  assert.equal(await page.isVisible("#handDrawnOutlineInfoPopover"), false);
+  await page.click("#handDrawnOutlineInfoIcon");
+  assert.equal(await page.isVisible("#handDrawnOutlineInfoPopover"), true);
+  assert.ok((await page.textContent("#handDrawnOutlineInfoPopover")).length > 0);
+
+  await page.click("h1");
+  assert.equal(await page.isVisible("#handDrawnOutlineInfoPopover"), false);
 });
 
 test("drawing and clearing a focus area updates status and the ASCII render", async () => {

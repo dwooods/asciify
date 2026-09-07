@@ -8,10 +8,16 @@ const {
   asciiRamp,
   luminanceToChar,
   sobelGradient,
+  sobelMagnitude,
+  edgeAngle,
   edgeChar,
+  nonMaxSuppress,
+  hysteresisThreshold,
+  bilateralBlurLuminance,
   computeComplexityMap,
   buildGlyphAtlas,
   matchGlyph,
+  quantizeInk,
   adjustLevels,
   computeImageStats,
   suggestLevels,
@@ -191,6 +197,110 @@ test("edgeChar returns a space when the gradient is weaker than the threshold", 
   assert.equal(edgeChar(5, 5, 2.0), " ");
 });
 
+test("sobelMagnitude normalizes a gradient vector to the shared 0-255-ish threshold scale", () => {
+  assert.ok(Math.abs(sobelMagnitude(5, 5) - 1.25) < 0.001);
+  assert.ok(Math.abs(sobelMagnitude(1020, 0) - 1020 / (4 * Math.SQRT2)) < 0.001);
+});
+
+test("edgeAngle folds gradient direction to 0..180 degrees, matching edgeChar's own buckets", () => {
+  assert.equal(edgeAngle(1020, 0), 0);
+  assert.equal(edgeAngle(0, 1020), 90);
+  assert.ok(Math.abs(edgeAngle(765, 765) - 45) < 0.001);
+  assert.ok(Math.abs(edgeAngle(765, -765) - 135) < 0.001);
+});
+
+test("nonMaxSuppress keeps only the local maximum along the gradient direction, suppressing its neighbors", () => {
+  // A 1x5 ridge peaking at index 2, all pixels reporting a ~0deg gradient
+  // (the "|" bucket, which compares each pixel against its left/right
+  // neighbors) - only the peak should survive; its shoulders (5 and 7),
+  // each smaller than a neighbor, should be suppressed to 0.
+  const magnitudes = [0, 5, 10, 7, 0];
+  const angles = [0, 0, 0, 0, 0];
+  const out = nonMaxSuppress(magnitudes, angles, 5, 1);
+  assert.deepEqual(Array.from(out), [0, 0, 10, 0, 0]);
+});
+
+test("nonMaxSuppress clamps its neighbor lookup at the image edge instead of reading out of bounds", () => {
+  // A single interior peak with flat zeros on both sides - the edge pixels
+  // themselves have no real neighbor magnitude to compare against, so this
+  // just confirms clamped sampling doesn't throw or corrupt the peak.
+  const magnitudes = [3, 0, 0];
+  const angles = [0, 0, 0];
+  const out = nonMaxSuppress(magnitudes, angles, 3, 1);
+  assert.equal(out[0], 3);
+});
+
+test("hysteresisThreshold keeps strong edges and weak edges connected to them, drops isolated weak edges", () => {
+  const width = 5, height = 5;
+  const at = (x, y) => y * width + x;
+  const magnitudes = new Float64Array(width * height);
+  magnitudes[at(0, 0)] = 1.0; // strong
+  magnitudes[at(1, 1)] = 0.5; // weak, diagonally touches the strong pixel
+  magnitudes[at(2, 2)] = 0.5; // weak, diagonally touches the now-promoted (1,1)
+  magnitudes[at(4, 4)] = 0.5; // weak, isolated - no path back to any strong pixel
+
+  const out = hysteresisThreshold(magnitudes, width, height, 0.8, 0.3);
+
+  assert.equal(out[at(0, 0)], 1, "strong pixel should always be kept");
+  assert.equal(out[at(1, 1)], 1, "weak pixel touching a strong edge should be promoted");
+  assert.equal(out[at(2, 2)], 1, "weak pixel transitively connected through another promoted weak pixel should be promoted");
+  assert.equal(out[at(4, 4)], 0, "weak pixel with no connection to any strong edge should be dropped");
+  assert.equal(Array.from(out).reduce((a, b) => a + b, 0), 3, "no other pixel should be marked as an edge");
+});
+
+test("bilateralBlurLuminance leaves a perfectly flat image unchanged", () => {
+  const img = makeImage(9, 9, () => 128);
+  const blurred = bilateralBlurLuminance(img, 9, 9);
+  for (let i = 0; i < blurred.length; i++) assert.equal(blurred[i], i % 4 === 3 ? 255 : 128);
+});
+
+test("bilateralBlurLuminance smooths a small, noise-scale brightness difference like an ordinary blur", () => {
+  // A lone pixel only 30 brighter than its flat neighborhood - well within
+  // sigmaRange (30's default), so this should behave like plain smoothing:
+  // pulled toward the neighborhood average, not left untouched.
+  const img = makeImage(9, 9, (x, y) => (x === 4 && y === 4 ? 130 : 100));
+  const blurred = bilateralBlurLuminance(img, 9, 9);
+  const centerValue = blurred[rgbaOffset(4, 4, 9)];
+  assert.ok(centerValue > 100 && centerValue < 130, `expected the speck smoothed toward its neighborhood, got ${centerValue}`);
+});
+
+test("bilateralBlurLuminance preserves a real high-contrast edge instead of softening it like a box blur would", () => {
+  // A hard vertical edge (left half black, right half white). A pixel right
+  // on the boundary has neighbors on BOTH sides within its averaging
+  // window - a box blur would mix them in proportionally, visibly
+  // softening the edge (this is the exact tiger-photo facial-detail loss
+  // documented in JOURNEY.md). A bilateral filter's range weight should
+  // suppress the far-side (very different brightness) neighbors almost
+  // entirely, keeping the boundary pixel close to its own original value.
+  const img = makeImage(9, 9, (x) => (x < 4 ? 0 : 255));
+  const blurred = bilateralBlurLuminance(img, 9, 9);
+  const boundaryValue = blurred[rgbaOffset(3, 4, 9)];
+  assert.ok(boundaryValue < 10, `expected the edge preserved close to its original 0, got ${boundaryValue}`);
+});
+
+test("bilateralBlurLuminance clamps its averaging window at image edges instead of reading out of bounds", () => {
+  const img = makeImage(9, 9, (x, y) => (x === 0 && y === 0 ? 200 : 100));
+  const blurred = bilateralBlurLuminance(img, 9, 9);
+  const cornerValue = blurred[rgbaOffset(0, 0, 9)];
+  assert.ok(Number.isFinite(cornerValue), "clamped sampling at the corner should not read out of bounds or NaN");
+});
+
+test("bilateralBlurLuminance writes an opaque, greyscale (R=G=B) buffer usable directly as sobelGradient input", () => {
+  const img = makeImage(9, 9, (x, y) => (x + y) * 20);
+  const blurred = bilateralBlurLuminance(img, 9, 9);
+  for (let y = 0; y < 9; y++) {
+    for (let x = 0; x < 9; x++) {
+      const o = rgbaOffset(x, y, 9);
+      assert.equal(blurred[o], blurred[o + 1]);
+      assert.equal(blurred[o + 1], blurred[o + 2]);
+      assert.equal(blurred[o + 3], 255);
+    }
+  }
+  // Should be usable as sobelGradient's input without throwing or NaN-ing.
+  const { dx, dy } = sobelGradient(blurred, 4, 4, 9, 9);
+  assert.ok(Number.isFinite(dx) && Number.isFinite(dy));
+});
+
 test("computeComplexityMap reports near-zero complexity for a flat image", () => {
   const img = makeImage(10, 10, () => 128);
   const complexity = computeComplexityMap(img, 10, 10, 2);
@@ -308,6 +418,51 @@ test("matchGlyph treats a near-flat patch as having no structure to match", () =
     v === 1 ? 0.01 : 0
   );
   assert.equal(matchGlyph(almostBlank, atlas, 0.9).char, " ");
+});
+
+test("matchGlyph's overrideMeanInk replaces the brightness target without touching shape matching", () => {
+  // Two visually distinct patches (different shapes) but deliberately
+  // given the SAME override should land on the same glyph when structure
+  // weight is 0 (pure brightness) - proving the override, not the
+  // patch's own real content, drives the brightness term.
+  const atlas = buildGlyphAtlas(testGlyphs);
+  const horizontal = glyphBitmap([".....", ".....", ".....", "#####", ".....", ".....", "....."]);
+  const vertical = glyphBitmap(["..#..", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."]);
+  const overridden1 = matchGlyph(horizontal, atlas, 0, 0.9);
+  const overridden2 = matchGlyph(vertical, atlas, 0, 0.9);
+  assert.equal(overridden1.char, overridden2.char, "same override should pick the same glyph regardless of real shape");
+
+  // An override of exactly 0 must still take effect (not be treated as
+  // "no override provided") - `??`, not `||`, is what makes 0 a real value.
+  const withZeroOverride = matchGlyph(horizontal, atlas, 0, 0);
+  const blankPatch = glyphBitmap([".....", ".....", ".....", ".....", ".....", ".....", "....."]);
+  const withoutOverride = matchGlyph(blankPatch, atlas, 0);
+  assert.equal(withZeroOverride.char, withoutOverride.char, "override of 0 should behave like a genuinely blank/zero patch");
+});
+
+test("quantizeInk buckets a value into evenly-spaced steps across the observed range", () => {
+  // 4 levels across [0, 1]: bucket centers at 0.125, 0.375, 0.625, 0.875.
+  assert.equal(quantizeInk(0.05, 0, 1, 4), 0.125);
+  assert.equal(quantizeInk(0.3, 0, 1, 4), 0.375);
+  assert.equal(quantizeInk(0.99, 0, 1, 4), 0.875);
+  // Values genuinely close together (same real bucket) collapse onto the
+  // identical representative value - the whole point of the control.
+  assert.equal(quantizeInk(0.11, 0, 1, 4), quantizeInk(0.14, 0, 1, 4));
+});
+
+test("quantizeInk uses the image's own observed range, not the theoretical 0-1 range", () => {
+  // A photo whose real per-cell means only span [0.6, 0.9] should have
+  // that narrower range divided into buckets, not [0, 1] - otherwise
+  // every bucket boundary would fall outside where the real data lives.
+  const low = quantizeInk(0.61, 0.6, 0.9, 3); // bucket 0 of 3: [0.6, 0.7)
+  const mid = quantizeInk(0.75, 0.6, 0.9, 3); // bucket 1 of 3: [0.7, 0.8)
+  const high = quantizeInk(0.89, 0.6, 0.9, 3); // bucket 2 of 3: [0.8, 0.9]
+  assert.ok(low < mid && mid < high, "expected buckets to remain ordered across the narrower real range");
+  assert.ok(low >= 0.6 && high <= 0.9, "expected bucket representatives to stay within the observed range");
+});
+
+test("quantizeInk with 0 levels (the 'off' sentinel) returns the value unchanged", () => {
+  assert.equal(quantizeInk(0.4231, 0, 1, 0), 0.4231);
 });
 
 test("adjustLevels with default settings (0 brightness, 0-255 range) is a no-op", () => {
