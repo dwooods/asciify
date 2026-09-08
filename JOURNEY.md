@@ -1824,3 +1824,203 @@ the request/response handling, none of them exercised the actual async
 image-decode timing a live browser run immediately surfaced - "verify,
 don't assume" applies to your own tests' coverage, not just the feature
 under test.
+
+**Addendum: could `ollama run x/z-image-turbo` replace Gemini and drop
+the per-call cost?** Worth checking for real rather than assuming, since
+Ollama shipped experimental local image generation in January 2026
+(Z-Image-Turbo, a 6B-parameter model from Alibaba's Tongyi Lab, plus
+FLUX.2 Klein) - exactly the kind of "free, local, no API key" option this
+project keeps circling back to. Verified against Ollama's own model card
+and blog post rather than the model family's general reputation, and the
+answer is no, for two independent reasons that would each be enough on
+their own:
+
+1. **It doesn't run on the user's machine at all.** Ollama's image
+   generation feature launched macOS-only. As of this check (eight months
+   after the January launch), Windows and Linux are still listed as
+   "coming soon" with no shipped date - the user is on Windows, so
+   `ollama run x/z-image-turbo` fails before the model-capability question
+   even matters.
+2. **Even on a supported platform, it's text-to-image only.** Ollama's
+   own model card lists `x/z-image-turbo`'s input type as Text - a prompt
+   in, a new image out, no image-input parameter. The underlying Z-Image
+   model genuinely does support img2img elsewhere (ComfyUI, diffusers,
+   hosted APIs like fal.ai's `z-image/turbo/image-to-image`) - but
+   Ollama's own CLI/API wrapper around it doesn't expose that today. This
+   is the identical shape of limitation Phase 17 already found and ruled
+   out for Ollama's other 2026 models (DeepSeek/Janus-Pro): text-to-image
+   regeneration can't preserve a specific photo's exact subject, pose, and
+   composition the way "Redraw with AI" needs - you'd get "a tiger," not
+   *this* tiger.
+
+Net effect: the cost/local-generation trade-off from Phase 17-18 is
+unchanged. The one option already proven to do real img2img on this
+user's actual hardware is still Forge + DirectML + ControlNet (Phase
+18), which just needs prompt/preprocessor tuning toward Gemini's flat-
+outline style rather than the crosshatch it produced by default - not a
+new Ollama model, however tempting the "just `ollama run` it" framing
+sounds. Re-check this if Ollama ever ships Windows support and/or exposes
+an image-input parameter for these models; neither is close as of this
+check.
+
+## Phase 19: Local contrast normalization for "Trace outline first" - a real, mixed result
+
+Prompted by the Ollama dead-end above: if the point of "Redraw with AI"
+is really "make real photos convert like bold line art does" (Phase 17's
+contrast-uniformity finding), could that be attacked directly in the
+existing deterministic pipeline instead of chasing another generative
+model - no AI, no API key, works over `file://` like the rest of the app?
+
+**The idea**: Phase 17 found real photo edges fail a global threshold not
+because they're noisy, but because they're *unevenly* strong - fur/skin
+boundaries have inherently low, gradual contrast that a bold ink line
+never does. So: before "Trace outline first"'s existing hysteresis
+threshold, rescale each pixel's Sobel magnitude relative to the strongest
+magnitude in its own local neighborhood (a window of `radius`), so a
+neighborhood's own strongest real edge reaches the same ceiling a bold
+line already sits at - independent of how weak that neighborhood was in
+absolute terms. Implemented as `localContrastNormalize(magnitudes,
+width, height, radius, floor, ceiling)` in `dither.js`, with a `floor`
+guard: a window whose strongest value never clears `floor` is left
+alone, since dividing by a near-zero local max would amplify pure
+sensor/compression noise into a fabricated full-strength "edge."
+
+**Tested against four real photos** (not just the tiger this time,
+specifically to stress-test the failure mode a single-photo test would
+miss): the tiger (real fur texture, the original motivating case), a
+low-contrast portrait, a busy cluttered room, and a genuinely foggy/hazy
+low-contrast photo (snow-covered trees in fog) - chosen deliberately as
+the hardest case: real structure (tree trunks) that's almost entirely
+below any reasonable contrast floor.
+
+**Where it wins**: on the tiger, at radius=6/floor=30, non-space
+character count went 3,175 → 4,221 (+33%) and the screenshot stayed
+clean and legible - genuinely more resolved fur/stripe detail, not
+noise. The low-contrast portrait improved modestly too (178 → 353),
+visibly a bit more defined without degrading.
+
+**Where it fails, badly**: on the foggy photo, the *same* floor=30
+still left the result visibly noisy with only faint hints of real tree
+structure; a lower floor=15 was much worse - baseline's correct
+near-blank output (149 non-space chars, since there's genuinely almost
+no contrast to detect) became a wall of noise covering the entire frame
+(3,238 chars) with zero recognizable structure. Raising the floor high
+enough to avoid this (50+) made the effect negligible everywhere,
+including the tiger - defeating the purpose.
+
+**Tried an adaptive floor next, and it made the failure worse, not
+better.** Rather than one fixed constant, derived `floor` from a
+percentile (75th/90th/95th) of each image's *own* gradient-magnitude
+distribution, on the theory that a photo's own noise floor should scale
+with the photo. For the foggy photo this backfired: since the whole
+image's magnitudes sit compressed near zero, even its 95th percentile
+was only 13.1 (versus the tiger's 38.4) - a *lower* absolute floor than
+the fixed constant that had already failed, producing an even bigger
+noise explosion (5,491 non-space chars, worse than the fixed floor=15
+result). The real problem isn't that the floor needs to scale per image
+- it's that a globally low-contrast image has no separation at all
+between "real weak edge" and "noise" for any same-image statistic to
+exploit; the information needed to tell them apart isn't in the gradient
+magnitude distribution alone.
+
+**Where this leaves things**: a real, verified, non-obvious result -
+not a guess, not "seemed like it should work." The technique is a
+genuine improvement for a bold-but-photographically-textured subject
+(exactly the tiger case that started this whole investigation), and a
+genuine hazard for low-contrast/atmospheric photos, and no single floor
+- fixed or adaptive - resolves that tension. Left as a tested, documented,
+*unused* primitive in `dither.js` (three unit tests, not wired into
+`script.js`/the UI) rather than shipped as a default or even an opt-in -
+shipping something with a confirmed noise-amplification failure mode
+without a fix would violate this project's own "no half-finished
+implementations" rule. The most promising untried next step: run the
+existing bilateral-blur noise-reduction step (already available via
+"Reduce noise") *before* computing gradients, on the theory that it's
+sensor/compression noise the normalization is amplifying, and denoising
+first might remove exactly that without needing a smarter threshold at
+all - not yet tried, flagged for whoever picks this up next.
+
+**Lesson**: testing against one photo (the tiger, again) would have
+shipped a bug. The whole point of adding three more real photos -
+including one deliberately chosen to be the hardest case for the
+mechanism being tested - was to find the failure before a user did.
+"Verify against real photos, not just the one that motivated the idea"
+is a restatement of this project's own standing process, but it's worth
+restating because it's exactly what caught this.
+
+**Addendum: denoising first turned the failed idea into a shipped
+feature.** The flagged next step above - run the existing bilateral
+blur ("Reduce noise") *before* computing gradients, instead of trying to
+out-guess the noise with a smarter floor - was tried, and it worked.
+Re-tested the same four photos with blur-then-normalize (radius=6,
+floor=30, the same values already calibrated above):
+
+| Photo | Baseline | Blur alone (existing) | Blur + normalize (new) |
+|---|---|---|---|
+| Tiger | 3,175 | 2,409 (loses detail - Phase 16's known cost) | 3,538 (clean, legible, *exceeds* baseline) |
+| Foggy trees | 149 (near-blank) | 110 (even blanker) | 169, but visibly reveals a real, clean tree-trunk shape invisible in either baseline or blur alone |
+| Soft portrait | 178 | 176 | 288 (comparable quality, slightly more silhouette) |
+| Busy room | 1,177 | 1,107 | 1,682 (comparable complexity, not degraded) |
+
+This reframes the whole feature: Phase 16 found bilateral blur trades
+noise-cleanup against losing real structural detail. Normalizing
+contrast *after* blurring recovers what blur costs, while blur's own
+noise suppression is exactly what stops normalization from amplifying
+sensor noise on a foggy photo - the two problems turn out to be the same
+problem, approached from opposite ends. One real caveat found the same
+way: at width=200 (finer resolution), the tiger goes noisy again -
+this helps a lot at typical resolution, it doesn't repeal Phase 17's
+underlying "smaller cells sample weaker gradients" limit at high
+resolution.
+
+**Shipped as an extension of "Reduce noise", not a new checkbox** -
+`computeHandDrawnOutlinePatches` in `script.js` now runs
+`localContrastNormalize` on the Sobel magnitude whenever
+`handDrawnOutlineBlur` is checked, never independently of it (matches
+the finding: normalizing unblurred magnitude is the failure mode from
+earlier in this phase). The checkbox's label copy was updated from
+"cleaner but less fine detail" (no longer true) to reflect that it now
+restores detail rather than costing it.
+
+**A second real bug, found only by testing in the actual app - not the
+standalone comparison script.** Wiring this in and re-verifying against
+the real UI (not the pixel-data-extraction harness used above) produced
+a wall-of-noise result on the foggy photo again, just like the original
+failure. Root cause: `floor=30` was calibrated against magnitude
+computed on *unstretched* levels (blackPoint=0, whitePoint=255) - but
+`computeHandDrawnOutlinePatches` computes magnitude on `source`, which
+already reflects whatever levels adjustment is active, including
+auto-suggest's own. Auto-suggest had picked black=119/white=203 for the
+foggy photo (a real, observed value, not a guess) - squeezing the 0-255
+range into 84 multiplies every pixel difference, and therefore every
+gradient magnitude, real edges and noise alike, by roughly
+255/(white-black) ≈ 3x. The fixed floor, calibrated for a 1x stretch,
+was now three times too permissive against already-amplified noise -
+the identical failure mode from earlier in this phase, just triggered by
+a different, initially-overlooked path into it (auto-suggest's own
+levels, not a user's).
+
+Fixed by scaling `outlineContrastFloor` by that same stretch factor
+(`255 / (whitePoint - blackPoint)`) before passing it to
+`localContrastNormalize`, so the floor stays anchored to the same
+real-world noise level regardless of how much the levels sliders (auto-
+suggested or manual) have already stretched the image. Re-verified
+directly against the live app: the foggy photo's ink-coverage ratio
+under the exact auto-suggested stretch (black=119/white=203) went from
+64% (unscaled floor - visibly a wall of noise) to 38% (scaled floor -
+back to a real, if imperfect, improvement) - confirmed by temporarily
+reverting the fix and re-running the new regression test, which fails
+against the unscaled version and passes against the fix. The tiger,
+whose auto-suggested stretch is much milder (black=7/white=228), was
+barely affected either way (3,595 → 3,630), confirming the fix doesn't
+cost anything on the case that was already working.
+
+**Lesson, again**: the standalone Node+Playwright comparison harness
+used to validate the original idea was faithful to `dither.js`'s pure
+math, but it bypassed a real piece of the actual pipeline - the levels
+adjustment auto-suggest applies before this code ever runs. A
+prototype's own test harness can silently omit exactly the interaction
+that breaks in production; the fix here is what this project's own
+working process already prescribes for any change touching `render()`
+- a real browser pass, not just "the standalone script confirmed it,"
+is what actually caught this.

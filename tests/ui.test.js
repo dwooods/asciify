@@ -26,6 +26,10 @@ let testTextPath;
 // since the tiny fixture doesn't have enough tonal range for the complexity
 // map to meaningfully distinguish "busy" from "flat" regions within it.
 const photoImagePath = path.join(ROOT, "test-assets", "soft portrait woman.png");
+// Genuinely foggy/hazy real photo - needed for the Reduce-noise regression
+// test below, which reproduces a real bug found on exactly this kind of
+// low-contrast image (see JOURNEY.md Phase 19).
+const foggyPhotoPath = path.join(ROOT, "test-assets", "low contrast photo.png");
 
 test.before(async () => {
   server = http.createServer((req, res) => {
@@ -647,6 +651,62 @@ test("Trace outline first changes the render, and its threshold/noise-reduction 
   await page.uncheck("#handDrawnOutline");
   const restored = await waitForOutputChange(withHigherThreshold);
   assert.equal(restored, beforeOutline);
+});
+
+test("Reduce noise's contrast normalization never turns the render into a wall of near-total ink", async () => {
+  // Regression test for a real bug found by hand: Reduce noise now also
+  // locally normalizes edge contrast (see JOURNEY.md Phase 19) so a
+  // genuinely weak-but-real edge isn't lost to a global threshold - but
+  // that normalization's "flat region" floor was calibrated against
+  // unstretched (blackPoint=0, whitePoint=255) magnitude. A real photo
+  // whose black/white points get pulled in tight (auto-suggest routinely
+  // does this on a low-contrast photo) multiplies every gradient - real
+  // edges and sensor noise alike - by roughly 255/(white-black), which
+  // blew straight past the un-scaled floor and amplified noise into a
+  // render that was almost entirely non-space characters. The fix scales
+  // the floor by that same factor; this pins the ratio of non-space
+  // characters well below "nearly everything got marked as an edge",
+  // across both a normal render and a deliberately extreme contrast
+  // stretch, so a future change to that scaling can't reintroduce this
+  // silently. Uses the actual foggy photo the bug was found on - a milder
+  // low-contrast image didn't reproduce a wide enough gap between the
+  // broken and fixed ratios to make a meaningful assertion.
+  await page.setInputFiles("#filepicker", foggyPhotoPath);
+  await page.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  await page.selectOption("#renderMode", "ascii");
+  await page.check("#handDrawnStyle");
+  await page.waitForTimeout(150);
+  await page.check("#handDrawnOutline");
+  await page.waitForTimeout(300);
+
+  // The exact narrow stretch (black=119, white=203) auto-suggest picked
+  // for a real low-contrast photo during manual testing - reproduced
+  // directly rather than relying on auto-suggest to happen to pick
+  // something this aggressive for whichever fixture this test uses.
+  await page.fill("#blackPoint", "119");
+  await page.dispatchEvent("#blackPoint", "change");
+  await page.fill("#whitePoint", "203");
+  await page.dispatchEvent("#whitePoint", "change");
+  await page.waitForTimeout(300);
+
+  await page.check("#handDrawnOutlineBlur");
+  await page.waitForTimeout(500);
+
+  const [gridInfo, text] = await Promise.all([
+    page.textContent("#gridInfo"),
+    page.evaluate(() => document.getElementById("output").innerText),
+  ]);
+  const [cols, rows] = gridInfo.match(/\d+/g).map(Number);
+  const totalCells = cols * rows;
+  const nonSpace = text.replace(/[\s\n]/g, "").length;
+
+  // Measured directly against this exact fixture/stretch: the fixed
+  // scaling produces ~38% coverage, the unscaled-floor bug produces ~62% -
+  // 0.5 sits cleanly between the two with margin on both sides.
+  assert.ok(
+    nonSpace / totalCells < 0.5,
+    `expected under 50% ink coverage, got ${nonSpace}/${totalCells} (${((nonSpace / totalCells) * 100).toFixed(1)}%)`
+  );
 });
 
 test("Trace outline first round-trips through the settings permalink and resets to off", async () => {

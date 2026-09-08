@@ -12,6 +12,7 @@ const {
   edgeAngle,
   edgeChar,
   nonMaxSuppress,
+  localContrastNormalize,
   hysteresisThreshold,
   bilateralBlurLuminance,
   computeComplexityMap,
@@ -228,6 +229,40 @@ test("nonMaxSuppress clamps its neighbor lookup at the image edge instead of rea
   const angles = [0, 0, 0];
   const out = nonMaxSuppress(magnitudes, angles, 3, 1);
   assert.equal(out[0], 3);
+});
+
+test("localContrastNormalize boosts a locally-weak-but-real edge up to the same ceiling a bold edge already reaches", () => {
+  // Two separate 1D "regions" side by side in a 6x1 row: a bold edge (peak
+  // 200, already near the ceiling) on the left, a faint-but-real edge
+  // (peak 40) on the right - the kind of low-contrast fur/skin boundary
+  // Phase 17 found real photos have. A window radius of 1 keeps each
+  // region's normalization local to itself.
+  const magnitudes = [10, 200, 10, 5, 40, 5];
+  const out = localContrastNormalize(magnitudes, 6, 1, 1, 20, 255);
+  // The bold edge's peak was already near the ceiling - normalizing
+  // against its own local max (200) leaves it essentially unchanged.
+  assert.equal(out[1], 255);
+  // The faint edge's peak (40) is well above the noise floor (20), so it
+  // gets rescaled to reach the SAME ceiling the bold edge reached - this
+  // is the whole point: a real edge shouldn't fail a global threshold
+  // just because its neighborhood's structure was uniformly weaker.
+  assert.equal(out[4], 255);
+});
+
+test("localContrastNormalize leaves a genuinely flat/noisy region alone instead of amplifying noise into a fake edge", () => {
+  // A window whose strongest value never exceeds the noise floor - a flat
+  // sky or wall with only sensor/compression noise, no real structure.
+  // Rescaling by such a tiny local max would blow noise up to full
+  // strength; the floor exists specifically to prevent that.
+  const magnitudes = [2, 3, 1, 2];
+  const out = localContrastNormalize(magnitudes, 4, 1, 1, 20, 255);
+  assert.deepEqual(Array.from(out), magnitudes);
+});
+
+test("localContrastNormalize never exceeds the given ceiling even when a raw magnitude already exceeds it", () => {
+  const magnitudes = [300, 10];
+  const out = localContrastNormalize(magnitudes, 2, 1, 1, 5, 255);
+  assert.ok(out[0] <= 255);
 });
 
 test("hysteresisThreshold keeps strong edges and weak edges connected to them, drops isolated weak edges", () => {
