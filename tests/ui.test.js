@@ -1048,3 +1048,134 @@ test("an absurdly large width/height is rejected rather than crashing the render
   const charCount = await page.textContent("#charCount");
   assert.notEqual(charCount, "0");
 });
+
+// "Redraw with AI" - the BYOK Gemini bridge. None of these tests hit the
+// real API: every request to generativelanguage.googleapis.com is
+// intercepted below, both so the suite stays fast/offline and so the exact
+// request the app sends can be inspected without a real key.
+const FAKE_API_KEY = "test-fake-gemini-key-do-not-use";
+
+test("Redraw with AI is disabled until both an image and a key are present", async () => {
+  assert.equal(await page.isDisabled("#aiRedrawBtn"), true);
+
+  await page.fill("#aiApiKey", FAKE_API_KEY);
+  assert.equal(await page.isDisabled("#aiRedrawBtn"), true, "no image yet - should still be disabled");
+
+  await loadTestImage();
+  assert.equal(await page.isDisabled("#aiRedrawBtn"), false);
+
+  await page.fill("#aiApiKey", "");
+  assert.equal(await page.isDisabled("#aiRedrawBtn"), true, "key cleared - should re-disable");
+});
+
+test("Redraw with AI: the key is never persisted, never logged, and never enters the permalink", async () => {
+  const consoleMessages = [];
+  page.on("console", (msg) => consoleMessages.push(msg.text()));
+
+  await loadTestImage();
+  await page.fill("#aiApiKey", FAKE_API_KEY);
+  assert.equal((await page.evaluate(() => Object.keys(localStorage).length)), 0);
+  assert.equal((await page.evaluate(() => Object.keys(sessionStorage).length)), 0);
+  assert.doesNotMatch(await page.evaluate(() => location.href), new RegExp(FAKE_API_KEY));
+
+  // Reloading the page must not restore it - nothing persists it anywhere.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  assert.equal(await page.inputValue("#aiApiKey"), "");
+
+  assert.ok(
+    !consoleMessages.some((m) => m.includes(FAKE_API_KEY)),
+    "the API key must never be written to the console"
+  );
+});
+
+test("Redraw with AI sends the image and prompt to Gemini and loads a successful result via the normal file-load path", async () => {
+  let capturedUrl = null;
+  let capturedBody = null;
+  await page.route("https://generativelanguage.googleapis.com/**", async (route) => {
+    capturedUrl = route.request().url();
+    capturedBody = JSON.parse(route.request().postData());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: TEST_PNG_BASE64 } }] } }],
+      }),
+    });
+  });
+
+  await loadTestImage();
+  await page.fill("#aiApiKey", FAKE_API_KEY);
+  await page.click("#aiRedrawBtn");
+  await page.waitForFunction(
+    () => document.getElementById("aiRedrawStatus").textContent.includes("Redrawn"),
+  );
+
+  // The request only ever goes to Google's own endpoint, authenticated the
+  // way Gemini's REST API requires - a query-string key on a direct HTTPS
+  // call to Google is the correct behavior here, not a leak.
+  assert.match(capturedUrl, /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/.+:generateContent\?key=/);
+  assert.ok(capturedUrl.includes(encodeURIComponent(FAKE_API_KEY)));
+  assert.equal(capturedBody.contents[0].parts[0].text.length > 0, true);
+  assert.equal(capturedBody.contents[0].parts[1].inlineData.mimeType, "image/png");
+
+  // The returned image was routed through the same loadFile() every other
+  // upload uses - imageInfo updates, output re-renders, no separate path.
+  await page.waitForFunction(() => document.getElementById("imageInfo").textContent.includes("gemini-redraw"));
+  assert.notEqual(await page.textContent("#charCount"), "0");
+});
+
+test("Redraw with AI reports a clear status when Gemini returns no image (e.g. safety-filtered)", async () => {
+  await page.route("https://generativelanguage.googleapis.com/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: "I can't help with that." }] } }] }),
+    })
+  );
+
+  await loadTestImage();
+  await page.fill("#aiApiKey", FAKE_API_KEY);
+  await page.click("#aiRedrawBtn");
+  await page.waitForFunction(
+    () => document.getElementById("aiRedrawStatus").textContent !== "Redrawing with Gemini…",
+  );
+  assert.match(await page.textContent("#aiRedrawStatus"), /No image came back/);
+  assert.equal(await page.isDisabled("#aiRedrawBtn"), false, "should re-enable so the user can retry");
+});
+
+test("Redraw with AI reports the HTTP status on a rejected request without leaking the key", async () => {
+  await page.route("https://generativelanguage.googleapis.com/**", (route) =>
+    route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: "denied" }) })
+  );
+
+  await loadTestImage();
+  await page.fill("#aiApiKey", FAKE_API_KEY);
+  await page.click("#aiRedrawBtn");
+  await page.waitForFunction(
+    () => document.getElementById("aiRedrawStatus").textContent !== "Redrawing with Gemini…",
+  );
+  const status = await page.textContent("#aiRedrawStatus");
+  assert.match(status, /API key/);
+  assert.ok(!status.includes(FAKE_API_KEY));
+});
+
+test("Redraw with AI reports a network-failure status when the request never reaches Google", async () => {
+  await page.route("https://generativelanguage.googleapis.com/**", (route) => route.abort());
+
+  await loadTestImage();
+  await page.fill("#aiApiKey", FAKE_API_KEY);
+  await page.click("#aiRedrawBtn");
+  await page.waitForFunction(
+    () => document.getElementById("aiRedrawStatus").textContent !== "Redrawing with Gemini…",
+  );
+  assert.match(await page.textContent("#aiRedrawStatus"), /Network error/);
+});
+
+test("the Redraw with AI info icon toggles a tap/keyboard-accessible popover", async () => {
+  assert.equal(await page.isVisible("#aiRedrawInfoPopover"), false);
+  await page.click("#aiRedrawInfoIcon");
+  assert.equal(await page.isVisible("#aiRedrawInfoPopover"), true);
+  assert.ok((await page.textContent("#aiRedrawInfoPopover")).length > 0);
+  await page.click("body");
+  assert.equal(await page.isVisible("#aiRedrawInfoPopover"), false);
+});

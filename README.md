@@ -14,6 +14,7 @@ The braille dithering/bit-packing approach is ported from [Lachlan Arthur's Brai
 - Four dithering modes for braille output: Floyd–Steinberg, Stucki, Atkinson, or plain threshold
 - **Adaptive detail** (ASCII/edges) — full character palette in visually busy areas, a simplified one elsewhere, with an optional manual focus area that always gets full detail regardless of measured complexity
 - **Suppress background** — an on-device AI model (U²-Net, running locally via WebAssembly) finds the photo's subject and blanks the background in the render; degrades gracefully to no-op if the model can't load (offline, blocked, or opened via `file://`)
+- **Redraw with AI** — optional, opt-in: paste your own free [Gemini API key](https://aistudio.google.com/apikey) and redraw the loaded photo as clean black-and-white line art (via `gemini-2.5-flash-image`) before converting — real photos often produce noisier text-art than bold, uniform-contrast line art, and this is a one-click way to get there (see `JOURNEY.md`). The request goes straight from your browser to Google's API over HTTPS using your own key; this project's code never sees it and there's no backend. The key lives only in the input field's in-memory value for the current page load — never written to `localStorage`/`sessionStorage`/cookies, never logged, never included in the shareable permalink — so reloading the page clears it. This is the one feature that needs genuine internet access, not just `http(s)` serving.
 - Brightness, black point, and white point levels controls, applied before dithering/thresholding, with one-click auto-suggested settings based on the image's own statistics
 - Adjustable output width, with an independent height once aspect-ratio lock is turned off
 - Adjustable on-screen preview size
@@ -23,7 +24,7 @@ The braille dithering/bit-packing approach is ported from [Lachlan Arthur's Brai
 - Copy to clipboard, or download as `.txt`, `.png`, or `.svg`
 - Shareable settings permalink — render mode, dithering, palette, thresholds, dimensions, levels, adaptive detail, hand-drawn style, and invert all round-trip through the URL (never the image itself), so a link reproduces a look
 - Accessible output: the (potentially huge) character grid is hidden from screen readers, with a concise live-region status announcing what was rendered
-- No build step, no runtime dependencies for the core converter — plain HTML/CSS/JS, works straight from `file://` (Suppress background is the one exception: it vendors `onnxruntime-web` and needs `http(s)`)
+- No build step, no runtime dependencies for the core converter — plain HTML/CSS/JS, works straight from `file://`. Two opt-in exceptions: Suppress background vendors `onnxruntime-web` and needs `http(s)`; Redraw with AI needs genuine internet access to reach Google's API. Neither is required for the core converter.
 
 ## Running it
 
@@ -81,6 +82,7 @@ CI (`.github/workflows/test.yml`) runs the full suite on every push/PR to `main`
 - **Edges mode** runs a Sobel operator over the greyscale image and maps each block's gradient direction/strength to a line-drawing character or a blank.
 - **Adaptive detail** reuses each cell's edge density and local contrast to classify it as "busy" or not, then reduces the character ramp (ASCII) or raises the effective edge threshold (Edges) in busy cells to cut down on visual noise, unless it falls inside a user-drawn focus area.
 - **Suppress background** runs a small salient-object-detection model (U²-Netp) via `onnxruntime-web` to compute a subject mask, then blanks background-masked cells in whichever mode's render loop is active.
+- **Redraw with AI** sends the loaded image (downscaled to at most 1024px) and a fixed line-art prompt straight from the browser to `gemini-2.5-flash-image` via a plain `fetch()` call — no SDK, since Google's official JS SDK adds a header that breaks the CORS preflight for this exact use case — and, on success, feeds the returned PNG through the same `loadFile()` every other upload uses.
 
 ## License
 

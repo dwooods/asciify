@@ -1528,3 +1528,279 @@ and got a real decision rather than an assumption in either direction:
 neither "sounds like a good idea, ship it" nor "it has some regression,
 skip it," but actually looking at what the regression cost in practice
 before choosing.
+
+**Addendum: a real 2025 paper comparing ML classifiers against AISS for
+structure-based ASCII art.** The user uploaded "Evaluating Machine
+Learning Approaches for ASCII Art Generation" (Coumar & Kingston,
+Purdue, arXiv:2503.14375, March 2025) - not previously seen, and worth
+recording because it independently validates the direction "Trace
+outline first" already took rather than suggesting a new one.
+
+Their whole pipeline is the same shape as this feature's: extract line
+structure first (they cite Canny, same family as `sobelGradient` +
+`nonMaxSuppress` + `hysteresisThreshold`), then match characters to the
+extracted structure rather than to raw continuous tone. They compare
+that matching step across classical ML (k-NN, SVM, Random Forest),
+deep learning (CNN, ResNet, MobileNetV2), and the same non-ML **AISS**
+baseline (Xu, Zhang, Wong 2010) already cited in this file's Phase 11
+addendum.
+
+The one finding worth keeping: **AISS - pure structural-similarity
+matching, no trained classifier at all - scored the highest SSIM
+(structural fidelity) of every technique they tested (0.6681), ahead of
+CNN (0.6638) and Random Forest (0.6654).** `matchGlyph`'s NCC-based
+shape correlation is architecturally the same family as AISS (direct
+similarity matching, not a learned classifier), not the same family as
+any of their ML/DL methods - so this is independent, external evidence
+that the deterministic-matching approach this whole codebase is built
+on isn't a simplification standing in for "real" ML, it's competitive
+with it on the metric that matters most for legibility.
+
+Their "overmatching" finding is a useful piece of vocabulary, not a new
+technique: ResNet and MobileNetV2 hit 96%+ character-classification
+accuracy yet produced visibly worse art, because a confident classifier
+would pick a complex-looking-but-wrong glyph in dense/ambiguous regions
+(their examples: eyes, mouths). That is a different mechanism than but
+the same *shape* of failure as Phase 10's root cause here (a small
+cluster of very-dark characters absorbing a wide range of genuinely
+different dark tones) - both are cases where a model's confidence and
+its correctness diverge specifically in the hardest regions of an
+image. Their HoG-features-don't-help and autoencoder-preprocessing-
+hurts results are two more "tried it, no gain" findings, same spirit as
+several of this project's own ruled-out attempts.
+
+**Nothing here changed any code.** Their core comparison is classical
+vs. deep ML *classifiers* for character selection - this codebase
+doesn't use a trained classifier for that step at all, so importing
+k-NN or Random Forest would mean adding a second ML dependency to the
+core converter purely to reach parity with an approach (AISS-style
+direct matching) already in use and already scoring better on their
+own structural metric. The value here is confirmation, not a
+prototype-worthy new idea.
+
+## Phase 17: An AI-redrawn tiger produces the best result of the whole investigation - and reveals why
+
+The user asked Gemini to redraw the tiger photo as a clean, monochromatic
+line-art illustration - strictly black lines on white, no shading, no
+gradients, no color, explicitly stylized (symmetric stripe patterns, a
+"shaggy ruff" rendered as jagged contour lines) - then asked whether
+asciify could do the same conversion itself, and whether feeding that
+redrawn image back into the app would help.
+
+**The two questions split cleanly.** Generating that image is a real
+generative/artistic task - inventing plausible new linework, not
+detecting edges already present in pixels - fundamentally different
+from what `sobelGradient`/`nonMaxSuppress`/`hysteresisThreshold` do.
+That's out of scope for this app's deterministic, dependency-light
+architecture (more below). But converting an *already-drawn* clean
+line-art image to ASCII is exactly the input "Trace outline first" was
+built for, and testable immediately with zero code changes.
+
+**First test, default settings, was a letdown.** At the shipped default
+(100-character width), the Gemini image rendered about as busy and
+unrecognizable as the real photo always had (3503 non-space characters,
+barely different from the photo's 3595). The obvious hypothesis -
+"clean art should have less noise" - looked wrong.
+
+**The real variable turned out to be resolution, not noise.** Re-run at
+200-character width, the *same* clean line-art image produced the
+clearest, most legible tiger face this entire investigation has
+produced - eyes, nose, muzzle outline, and individual stripe patterns
+all genuinely readable, not just "more coherent than before." Run the
+*real photo* through the identical 200-character-width test as a
+controlled comparison, and it went the other way: the face disappeared
+into scattered, disconnected marks, worse than at 100 characters.
+
+That controlled pair (same image class, same width, opposite outcomes)
+pins down the actual mechanism: it isn't about noise, it's about
+**contrast uniformity**. Real fur boundaries are inherently low,
+gradual-contrast edges - at finer grid resolution, each smaller cell
+samples an even weaker gradient, so more cells fall below the edge
+threshold and detection just fails. Bold hand-drawn ink lines stay
+strong at any scale, so finer resolution just resolves more of the same
+signal instead of losing it. This is a mechanistic explanation
+confirmed by a controlled test, not a guess - and it means the
+AI-redraw step helps not by "cleaning up" the photo but by converting
+inherently low-contrast structure into inherently high-contrast
+structure the existing pipeline already knows how to exploit at scale.
+
+**Attempted to automate the redraw step locally, and hit a real hardware
+wall rather than a software one.** The user runs Ollama locally and
+asked whether it or DeepSeek's Janus-Pro could do this - both verified
+and ruled out rather than assumed: Ollama's 2026 image-generation
+feature is text-to-image only, no img2img; Janus-Pro is also
+fundamentally text-to-image, and the "DeepSeek + Flux" workaround
+people use goes through a text-description bottleneck that would lose
+exact structural fidelity to the source photo (regenerating "a tiger,"
+not preserving *this* tiger's specific features). The correct tool is
+ComfyUI/Forge with a ControlNet lineart or canny preprocessor - genuine
+structure-preserving img2img, run locally on the user's own GPU, free
+and fully offline once set up, with the browser able to call a local
+server directly (`http://localhost:PORT`) without this app needing any
+backend of its own.
+
+Setup ran into a real, well-corroborated hardware gap rather than a
+fixable bug: the user's RX 6700 XT (RDNA2) is excluded from every
+current official AMD acceleration path on Windows - native ROCm
+(RDNA3+ only, per ComfyUI's own README), and the new WSL2 ROCDXG
+solution (also RDNA3+/Ryzen AI only, confirmed directly against its
+GitHub compatibility matrix) - leaving DirectML as the only path that
+sees the GPU at all. DirectML got ComfyUI's own startup log to warn
+outright that it "barely works... has not been updated in over 1 year
+and might be removed soon," misreported the card's 12GB VRAM as 1GB,
+and broke against current ComfyUI's dependencies twice (a `comfy_aimdo`
+import ComfyUI's own requirements.txt was needed for but the wrapper
+script never installed; then a genuine `comfy_kitchen` version
+incompatible with DirectML's frozen PyTorch 2.4.1) before the user
+reasonably called it - three independent sources (ComfyUI's README, the
+ROCDXG compatibility matrix, and an older ROCm community thread on the
+`amdgpu` WSL2 kernel module) all agreeing RDNA2 isn't supported was
+enough to stop rather than keep patching around a real generational gap.
+
+**Where this leaves things**: the research question is answered, fully
+and concretely, independent of the automation outcome - a properly
+prepared (bold, high-contrast, structure-preserving) input produces
+dramatically better results through the exact pipeline already shipped,
+with a real mechanistic explanation for why. Automating the redraw step
+inside the app remains a real, understood, and separately-scoped future
+option (ComfyUI + ControlNet, called from the browser to a local
+server) - blocked on the user's current hardware generation, not on
+anything in this codebase, and revisitable independent of any of it.
+
+**Lesson**: verifying rather than assuming paid off twice in one
+detour, in opposite directions - confirming Ollama/Janus-Pro genuinely
+can't do img2img avoided building on a wrong assumption, while treating
+"DirectML doesn't officially support your card" as worth investigating
+anyway (rather than accepting the first "unsupported" verdict) found
+that DirectML actually does see the GPU, just not well enough for
+current software. Knowing precisely which layer failed - GPU detection
+succeeded; production-grade compute for a fast-moving codebase like
+current ComfyUI did not - is what made "stop here" a confident decision
+instead of a shrug.
+
+## Phase 18: Local generation abandoned for real, a BYOK Gemini API integration shipped instead
+
+Phase 17 stopped at ComfyUI specifically - the user pushed further and
+asked to try `stable-diffusion-webui-amdgpu-forge`, a different AMD-DirectML
+fork, rather than accepting the ComfyUI wall as final. Worth recording
+honestly: this *did* get further. After several real, ordinary packaging
+issues (wrong Python version, `--use-directml` vs. the fork's actual
+`--directml` flag, a `pkg_resources`/`bdist_wheel` build-isolation problem
+installing CLIP, a wrong ControlNet model repo format - diffusers-style
+`config.json`+`.safetensors` instead of the single-file format Forge's UI
+actually reads), Forge ran end-to-end on the RX 6700 XT via DirectML and
+produced real Stable Diffusion + ControlNet-lineart generations in
+15-30 seconds, despite DirectML still misreporting VRAM (1024MB reported,
+10.8GB+ actually used). So the hardware wall from Phase 17 was real for
+ComfyUI's specific dependency stack, not for DirectML on this GPU in
+general - a narrower conclusion than Phase 17 drew, corrected here rather
+than left standing.
+
+**But the generated line art itself was the wrong style.** The
+ControlNet-lineart output was a busy crosshatch/engraving look - 15,128
+non-space characters through the shipped pipeline, busier and less
+legible than either the real photo or the Gemini-app image from Phase 17.
+Compared side by side against a fresh Gemini-app redraw of the same
+tiger (flat, sparse, uniform-weight contour lines, no crosshatching -
+3,969 non-space characters, the cleanest result of the whole
+investigation), the two are both genuinely "monochrome AI line art" by
+category, but not interchangeable inputs for this pipeline: bold, flat,
+low-line-count contours convert far better than dense hatching, which
+just replaces photographic noise with a different kind of noise. This
+matters for anyone revisiting local generation later - matching
+Gemini's flat-outline style would need prompt/ControlNet-preprocessor
+tuning (a lineart_realistic-style preprocessor and a low-density LoRA or
+prompt bias, not just "add ControlNet"), not just getting a pipeline
+running at all.
+
+**At this point the user asked to abandon local generation entirely**
+("this seems to be moving away from something cloning and easily
+running this program") and pivot: use the Gemini API directly, with
+each *user* supplying their own key so the redraw step costs the
+project nothing and doesn't require a backend. That reframes the
+question from "can we generate images" (answered, twice over, since
+Phase 17) to "can a static, backend-less site call a paid cloud API
+safely" - a real architecture question, tested rather than assumed:
+
+- **CORS was the actual risk**, and it was resolved empirically, not
+  guessed at. A standalone test page (`fetch()`, no SDK) called
+  `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}`
+  directly from the browser. The first attempt used the model name
+  `gemini-2.0-flash-exp` and got HTTP 404 - which, critically, is a
+  *server* response, not a thrown `fetch` `TypeError`, proving CORS
+  didn't block the request at all; a real CORS block would never reach
+  the point of getting an HTTP status back. (Google's newer `js-genai`
+  SDK was tried first and *does* get CORS-blocked, because it adds an
+  `Api-Revision` header that fails preflight - the plain REST call
+  sidesteps that entirely, which is why this project calls the API
+  directly rather than depending on the SDK.)
+- **The model name was stale, not the architecture.** Querying the live
+  `ListModels` endpoint directly (rather than trusting another
+  secondhand search result) found current names as of testing:
+  `gemini-2.5-flash-image` ("Nano Banana"), `gemini-3.1-flash-image`
+  ("Nano Banana 2"), `gemini-3-pro-image`/`-preview` ("Nano Banana
+  Pro"), `gemini-3.1-flash-lite-image`. Switching to
+  `gemini-2.5-flash-image` got a real HTTP 200 with a genuine generated
+  image back, end to end, no backend involved at any point.
+- The user's own API-key test never touched this chat session - a
+  self-contained local HTML page was built for them to open and paste
+  their key into directly in their own browser, so the key was never
+  pasted into, logged by, or transmitted through this conversation.
+
+**The shipped feature** ("Redraw with AI" in `index.html`/`script.js`)
+sends the loaded image at up to 1024px (downscaled client-side, matching
+what testing validated) plus a fixed line-art prompt to
+`gemini-2.5-flash-image`, and on success feeds the returned PNG through
+the existing `loadFile()` - no separate image-loading path, no
+duplicated thumb/auto-suggest/render logic. Explicit security decisions,
+made because a pasted API key is real, if modest, exposure surface:
+
+- The key is read fresh from the input element's value on every
+  request and never assigned to a variable that outlives the click
+  handler - no in-memory copy floating around to leak via a later bug.
+- **Deliberately not persisted anywhere** - no `localStorage`, no
+  `sessionStorage`, no cookie, no inclusion in the shareable settings
+  permalink (`updateUrl()`/`restoreSettingsFromUrl()` were left
+  untouched specifically so this can never happen by accident).
+  Reloading the page clears the key completely. This trades convenience
+  (re-pasting the key each session) for the strongest available
+  guarantee against silent leakage, since a backend-less app has no
+  server-side place to keep a secret safely anyway.
+- Never passed to `console.log`/`console.error` - error paths report
+  the HTTP status or a generic network-failure message, never the
+  request URL (which embeds the key as a query parameter) or body.
+- The input is `type="password"` with `autocomplete="off"`, and the app
+  has no `<form>` element anywhere, which avoids inviting a browser
+  password-manager save prompt for what isn't a login credential.
+- The in-panel help text tells users to restrict their own key by HTTP
+  referrer in Google AI Studio - the actual mitigation Google provides
+  for a key that's going to sit in client-side JS, since no purely
+  client-side app can fully hide a secret from its own user.
+- Verified live in a real browser (Playwright), not just read as
+  "looks right": confirmed the button's enabled/disabled state machine
+  (needs both an image and a non-empty key), confirmed the key never
+  appears in the URL after use, confirmed `localStorage`/`sessionStorage`
+  stay empty after a full redraw-and-clear cycle, and confirmed no
+  console message ever contains the key.
+
+**Where this leaves things**: the zero-backend, zero-build-step
+architecture this whole project is built around is preserved even for a
+feature that needs a paid third-party API - the trick is that the user's
+own key and the user's own browser do the paying and the calling, this
+project's code is just the client. Local, free, fully-offline generation
+(ComfyUI/Forge + ControlNet, tuned toward Gemini's flat-outline style
+rather than the default crosshatch) remains a real, understood,
+separately-scoped option for later - not blocked by hardware after all,
+just by the extra tuning work needed to match the style that actually
+converts well.
+
+**Lesson**: Phase 17 called the ComfyUI wall a hardware gap; pushing
+past that assumption (per this project's own stated engineering process
+- verify, don't stop at the first plausible-sounding "unsupported")
+found a working local path after all, just with the wrong output style.
+Neither conclusion was wrong at the moment it was written, but the
+second one was cheaper to reach *because* it built on the first
+attempt's specific, logged failures instead of starting over. And the
+CORS question - the one thing that could have killed the entire BYOK
+approach - was answered by making one real request and reading the
+actual response, not by reasoning about it from documentation alone.
