@@ -145,6 +145,52 @@
     return "/";
   }
 
+  // Boosts locally-weak-but-real edges to the same strength as bold ones,
+  // instead of leaving every pixel at its raw Sobel magnitude. Real
+  // photographic edges (fur/skin/fabric boundaries) have inherently low,
+  // gradual contrast; bold hand-drawn ink lines are uniformly strong
+  // regardless of scale. A single global threshold (see
+  // hysteresisThreshold) treats both the same way, so the weak real edges
+  // fail first - especially at a finer character-grid resolution, where
+  // each smaller sampled cell captures an even weaker gradient (see
+  // JOURNEY.md's Phase 17 "contrast uniformity" finding, discovered by
+  // comparing an AI-redrawn line-art image against the same photo at
+  // matched resolution).
+  //
+  // For each pixel, finds the strongest magnitude within a
+  // (2*radius+1)-square window and rescales the pixel's own magnitude
+  // relative to that local peak, so the locally-strongest edge in any
+  // neighborhood that has real structure reaches the same ceiling a bold
+  // line already sits at - independent of how weak that neighborhood's
+  // edges were in absolute terms.
+  //
+  // `floor` is the noise guard this needs to not be actively harmful: a
+  // window with no real edge at all (flat sky, a smooth wall) has a
+  // near-zero local max, and dividing by a near-zero number would amplify
+  // whatever sensor/compression noise is present into a fabricated full-
+  // strength "edge" where none exists. Below `floor`, a window is treated
+  // as genuinely flat and left at its original (already near-zero)
+  // magnitude instead of being rescaled.
+  function localContrastNormalize(magnitudes, width, height, radius, floor, ceiling = 255) {
+    const out = new Float64Array(magnitudes.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let localMax = 0;
+        for (let wy = -radius; wy <= radius; wy++) {
+          const sy = Math.min(height - 1, Math.max(0, y + wy));
+          for (let wx = -radius; wx <= radius; wx++) {
+            const sx = Math.min(width - 1, Math.max(0, x + wx));
+            const m = magnitudes[sy * width + sx];
+            if (m > localMax) localMax = m;
+          }
+        }
+        const i = y * width + x;
+        out[i] = localMax < floor ? magnitudes[i] : Math.min(ceiling, (magnitudes[i] / localMax) * ceiling);
+      }
+    }
+    return out;
+  }
+
   // Thins a Sobel magnitude field down to 1px-wide ridges: a pixel survives
   // only if its magnitude is >= both neighbors along its own gradient
   // direction (quantized to the same four orientation buckets edgeChar uses
@@ -728,6 +774,7 @@
     sobelMagnitude,
     edgeAngle,
     edgeChar,
+    localContrastNormalize,
     nonMaxSuppress,
     hysteresisThreshold,
     bilateralBlurLuminance,

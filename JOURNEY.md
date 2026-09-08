@@ -1862,3 +1862,88 @@ new Ollama model, however tempting the "just `ollama run` it" framing
 sounds. Re-check this if Ollama ever ships Windows support and/or exposes
 an image-input parameter for these models; neither is close as of this
 check.
+
+## Phase 19: Local contrast normalization for "Trace outline first" - a real, mixed result
+
+Prompted by the Ollama dead-end above: if the point of "Redraw with AI"
+is really "make real photos convert like bold line art does" (Phase 17's
+contrast-uniformity finding), could that be attacked directly in the
+existing deterministic pipeline instead of chasing another generative
+model - no AI, no API key, works over `file://` like the rest of the app?
+
+**The idea**: Phase 17 found real photo edges fail a global threshold not
+because they're noisy, but because they're *unevenly* strong - fur/skin
+boundaries have inherently low, gradual contrast that a bold ink line
+never does. So: before "Trace outline first"'s existing hysteresis
+threshold, rescale each pixel's Sobel magnitude relative to the strongest
+magnitude in its own local neighborhood (a window of `radius`), so a
+neighborhood's own strongest real edge reaches the same ceiling a bold
+line already sits at - independent of how weak that neighborhood was in
+absolute terms. Implemented as `localContrastNormalize(magnitudes,
+width, height, radius, floor, ceiling)` in `dither.js`, with a `floor`
+guard: a window whose strongest value never clears `floor` is left
+alone, since dividing by a near-zero local max would amplify pure
+sensor/compression noise into a fabricated full-strength "edge."
+
+**Tested against four real photos** (not just the tiger this time,
+specifically to stress-test the failure mode a single-photo test would
+miss): the tiger (real fur texture, the original motivating case), a
+low-contrast portrait, a busy cluttered room, and a genuinely foggy/hazy
+low-contrast photo (snow-covered trees in fog) - chosen deliberately as
+the hardest case: real structure (tree trunks) that's almost entirely
+below any reasonable contrast floor.
+
+**Where it wins**: on the tiger, at radius=6/floor=30, non-space
+character count went 3,175 → 4,221 (+33%) and the screenshot stayed
+clean and legible - genuinely more resolved fur/stripe detail, not
+noise. The low-contrast portrait improved modestly too (178 → 353),
+visibly a bit more defined without degrading.
+
+**Where it fails, badly**: on the foggy photo, the *same* floor=30
+still left the result visibly noisy with only faint hints of real tree
+structure; a lower floor=15 was much worse - baseline's correct
+near-blank output (149 non-space chars, since there's genuinely almost
+no contrast to detect) became a wall of noise covering the entire frame
+(3,238 chars) with zero recognizable structure. Raising the floor high
+enough to avoid this (50+) made the effect negligible everywhere,
+including the tiger - defeating the purpose.
+
+**Tried an adaptive floor next, and it made the failure worse, not
+better.** Rather than one fixed constant, derived `floor` from a
+percentile (75th/90th/95th) of each image's *own* gradient-magnitude
+distribution, on the theory that a photo's own noise floor should scale
+with the photo. For the foggy photo this backfired: since the whole
+image's magnitudes sit compressed near zero, even its 95th percentile
+was only 13.1 (versus the tiger's 38.4) - a *lower* absolute floor than
+the fixed constant that had already failed, producing an even bigger
+noise explosion (5,491 non-space chars, worse than the fixed floor=15
+result). The real problem isn't that the floor needs to scale per image
+- it's that a globally low-contrast image has no separation at all
+between "real weak edge" and "noise" for any same-image statistic to
+exploit; the information needed to tell them apart isn't in the gradient
+magnitude distribution alone.
+
+**Where this leaves things**: a real, verified, non-obvious result -
+not a guess, not "seemed like it should work." The technique is a
+genuine improvement for a bold-but-photographically-textured subject
+(exactly the tiger case that started this whole investigation), and a
+genuine hazard for low-contrast/atmospheric photos, and no single floor
+- fixed or adaptive - resolves that tension. Left as a tested, documented,
+*unused* primitive in `dither.js` (three unit tests, not wired into
+`script.js`/the UI) rather than shipped as a default or even an opt-in -
+shipping something with a confirmed noise-amplification failure mode
+without a fix would violate this project's own "no half-finished
+implementations" rule. The most promising untried next step: run the
+existing bilateral-blur noise-reduction step (already available via
+"Reduce noise") *before* computing gradients, on the theory that it's
+sensor/compression noise the normalization is amplifying, and denoising
+first might remove exactly that without needing a smarter threshold at
+all - not yet tried, flagged for whoever picks this up next.
+
+**Lesson**: testing against one photo (the tiger, again) would have
+shipped a bug. The whole point of adding three more real photos -
+including one deliberately chosen to be the hardest case for the
+mechanism being tested - was to find the failure before a user did.
+"Verify against real photos, not just the one that motivated the idea"
+is a restatement of this project's own standing process, but it's worth
+restating because it's exactly what caught this.
