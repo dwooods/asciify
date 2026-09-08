@@ -1824,3 +1824,41 @@ the request/response handling, none of them exercised the actual async
 image-decode timing a live browser run immediately surfaced - "verify,
 don't assume" applies to your own tests' coverage, not just the feature
 under test.
+
+**Addendum: could `ollama run x/z-image-turbo` replace Gemini and drop
+the per-call cost?** Worth checking for real rather than assuming, since
+Ollama shipped experimental local image generation in January 2026
+(Z-Image-Turbo, a 6B-parameter model from Alibaba's Tongyi Lab, plus
+FLUX.2 Klein) - exactly the kind of "free, local, no API key" option this
+project keeps circling back to. Verified against Ollama's own model card
+and blog post rather than the model family's general reputation, and the
+answer is no, for two independent reasons that would each be enough on
+their own:
+
+1. **It doesn't run on the user's machine at all.** Ollama's image
+   generation feature launched macOS-only. As of this check (eight months
+   after the January launch), Windows and Linux are still listed as
+   "coming soon" with no shipped date - the user is on Windows, so
+   `ollama run x/z-image-turbo` fails before the model-capability question
+   even matters.
+2. **Even on a supported platform, it's text-to-image only.** Ollama's
+   own model card lists `x/z-image-turbo`'s input type as Text - a prompt
+   in, a new image out, no image-input parameter. The underlying Z-Image
+   model genuinely does support img2img elsewhere (ComfyUI, diffusers,
+   hosted APIs like fal.ai's `z-image/turbo/image-to-image`) - but
+   Ollama's own CLI/API wrapper around it doesn't expose that today. This
+   is the identical shape of limitation Phase 17 already found and ruled
+   out for Ollama's other 2026 models (DeepSeek/Janus-Pro): text-to-image
+   regeneration can't preserve a specific photo's exact subject, pose, and
+   composition the way "Redraw with AI" needs - you'd get "a tiger," not
+   *this* tiger.
+
+Net effect: the cost/local-generation trade-off from Phase 17-18 is
+unchanged. The one option already proven to do real img2img on this
+user's actual hardware is still Forge + DirectML + ControlNet (Phase
+18), which just needs prompt/preprocessor tuning toward Gemini's flat-
+outline style rather than the crosshatch it produced by default - not a
+new Ollama model, however tempting the "just `ollama run` it" framing
+sounds. Re-check this if Ollama ever ships Windows support and/or exposes
+an image-input parameter for these models; neither is close as of this
+check.
