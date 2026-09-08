@@ -10,6 +10,13 @@ The dithering/braille-packing approach is ported from [Lachlan Arthur's Braille-
 
 **Future direction**: this project is expected to ship as an installable mobile app at some point - most likely a PWA (manifest + service worker, "Add to Home Screen") or a Trusted Web Activity wrapper on Android, not a native rewrite, since the whole point is that the existing client-side architecture already works unmodified in a mobile WebView. Nothing needs building for this now, but new work should not quietly foreclose it: keep relying only on standard web platform APIs (canvas, `fetch`, WASM, clipboard, drag-and-drop with a touch-friendly fallback - `handDrawnOutline`'s focus-region drawing already supports touch events, not just mouse), avoid anything that assumes a server-side session or a desktop-only capability, and keep the UI usable at phone-sized viewports. If a feature would only make sense with server-side state (accounts, sync, shared storage), flag that explicitly rather than building around it silently - it's a real architecture decision, not a small one.
 
+## What to work on next
+
+Two files, two different jobs - check both when picking up work with no other context (a fresh session, or "what should we work on"):
+
+- **`IDEAS.md`** - the backlog: things worth trying, brainstormed but not committed to. Pick from here, or add to it when a new idea comes up mid-task rather than chasing it immediately.
+- **`JOURNEY.md`** - the historical record: what was actually tried, what broke, what was learned, real numbers. Read the relevant phase before repeating an investigation - several ideas in `IDEAS.md`'s "Done / decided against" section were tried once already for a documented reason.
+
 ## Commands
 
 ```bash
