@@ -1804,3 +1804,23 @@ attempt's specific, logged failures instead of starting over. And the
 CORS question - the one thing that could have killed the entire BYOK
 approach - was answered by making one real request and reading the
 actual response, not by reasoning about it from documentation alone.
+
+**Addendum, after PR #31 merged**: the user's first real end-to-end run
+against the actual API (real key, real tiger photo, real network) found
+a genuine bug that every mocked test had missed - the status line got
+stuck on "Redrawn - loading result…" forever, even though the image had
+visibly finished loading and re-rendered (charCount populated, thumbnail
+updated, auto-suggest re-run). Root cause: `loadFile()` decodes the blob
+asynchronously via `image.onload`, and nothing told the AI-redraw code
+when that finished - it just set an interim status string and never
+followed up. Fixed by giving `loadFile()` an optional completion
+callback (guarded by the same `imageGeneration` staleness check
+`requestSubjectMask` already uses, in case a newer load starts before
+this one's decode finishes), and tightened the existing test to assert
+the exact final status string rather than a substring both the old buggy
+message and the fixed one would have matched. The lesson isn't new but
+it repeated anyway: eight passing mocked tests gave real confidence in
+the request/response handling, none of them exercised the actual async
+image-decode timing a live browser run immediately surfaced - "verify,
+don't assume" applies to your own tests' coverage, not just the feature
+under test.

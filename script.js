@@ -278,9 +278,14 @@
     thumb.style.display = "none";
   }
 
-  function loadFile(file) {
+  function loadFile(file, onLoaded) {
     if (!file) return;
     imageGeneration++;
+    // Captured now, not read fresh later - if a still-newer load starts
+    // before this file's decode finishes (e.g. the user uploads a
+    // different photo while an AI redraw's blob is still decoding),
+    // onLoaded must not fire for a load that's no longer current.
+    const generation = imageGeneration;
     subjectMask = null;
     loadError.style.display = "none";
     imageInfo.textContent = `${file.name} · ${formatBytes(file.size)} · ${file.type || "unknown type"}`;
@@ -303,6 +308,7 @@
       updateFocusOverlay();
       if (suppressBackground) requestSubjectMask();
       updateAiRedrawButtonState();
+      if (onLoaded && generation === imageGeneration) onLoaded();
     };
     // file.type isn't a reliable gate (it can be empty for legitimate images
     // from some sources), so actual decode success/failure is the real
@@ -1839,7 +1845,9 @@
 
       const blob = base64ToBlob(part.inlineData.data, part.inlineData.mimeType || "image/png");
       aiRedrawStatus.textContent = "Redrawn - loading result…";
-      loadFile(new File([blob], "gemini-redraw.png", { type: blob.type }));
+      loadFile(new File([blob], "gemini-redraw.png", { type: blob.type }), () => {
+        aiRedrawStatus.textContent = "Redrawn - line art loaded.";
+      });
     } catch (err) {
       if (generation !== imageGeneration) return;
       aiRedrawStatus.textContent = "Network error - the request never reached Google's API.";
