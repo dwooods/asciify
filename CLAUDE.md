@@ -17,6 +17,8 @@ Two files, two different jobs - check both when picking up work with no other co
 - **`IDEAS.md`** - the backlog: things worth trying, brainstormed but not committed to. Pick from here, or add to it when a new idea comes up mid-task rather than chasing it immediately.
 - **`JOURNEY.md`** - the historical record: what was actually tried, what broke, what was learned, real numbers. Read the relevant phase before repeating an investigation - several ideas in `IDEAS.md`'s "Done / decided against" section were tried once already for a documented reason.
 
+**These two markdown files are the source of truth** - git-tracked, PR-reviewed like everything else in this repo, and readable with zero setup by any session (`cat IDEAS.md`, no credentials, works even over `file://`). A mirror of both also exists in a Supabase Postgres project (`journey_entries` and `ideas` tables, project ref `lutfyybkbhcmqculfoka`), added on request for queryable/filterable access - e.g. `select title from ideas where status = 'backlog'`. That mirror needs the Supabase MCP connector set up locally (`claude mcp add --transport http supabase https://mcp.supabase.com/mcp`, then authorize the org in a browser) and only works while the free-tier project hasn't auto-paused from a week of inactivity (resume it from the Supabase dashboard if a query fails). **The mirror is not kept in sync automatically** - if you add/change an idea or a journey entry, update the markdown file (it's the real record) and, if you want the database current too, apply the same change there by hand; don't treat a stale database row as authoritative over the file.
+
 ## Commands
 
 ```bash
