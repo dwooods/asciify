@@ -8,6 +8,8 @@ A client-side image-to-braille-text converter: drop in an image, get back Unicod
 
 The dithering/braille-packing approach is ported from [Lachlan Arthur's Braille-ASCII-Art](https://github.com/LachlanArthur/Braille-ASCII-Art) (MIT).
 
+**Future direction**: this project is expected to ship as an installable mobile app at some point - most likely a PWA (manifest + service worker, "Add to Home Screen") or a Trusted Web Activity wrapper on Android, not a native rewrite, since the whole point is that the existing client-side architecture already works unmodified in a mobile WebView. Nothing needs building for this now, but new work should not quietly foreclose it: keep relying only on standard web platform APIs (canvas, `fetch`, WASM, clipboard, drag-and-drop with a touch-friendly fallback - `handDrawnOutline`'s focus-region drawing already supports touch events, not just mouse), avoid anything that assumes a server-side session or a desktop-only capability, and keep the UI usable at phone-sized viewports. If a feature would only make sense with server-side state (accounts, sync, shared storage), flag that explicitly rather than building around it silently - it's a real architecture decision, not a small one.
+
 ## Commands
 
 ```bash
@@ -39,7 +41,7 @@ Keep the dither.js/script.js split intact: any change to the dithering/packing m
 
 For any change beyond a trivial fix, work it like a full engineer + QA pass, not just "make it compile":
 
-1. **Before coding** — name the specific risk this change could hit, not a generic one: does it still work over `file://`? does it handle a 1×1 or non-square image, or a non-image file dropped in? does it change output for an existing dither mode?
+1. **Before coding** — name the specific risk this change could hit, not a generic one: does it still work over `file://`? does it handle a 1×1 or non-square image, or a non-image file dropped in? does it change output for an existing dither mode? does it still work in a touch-only, phone-sized viewport (see "Future direction" above)?
 2. **After coding** — verify, don't assume:
    - Run `npm test`.
    - Any change touching `render()`, `index.html`, or `style.css` gets a real browser pass (upload an image, cycle dither modes, toggle invert) — "the code looks right" is not verification.
