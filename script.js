@@ -2103,4 +2103,12 @@
   }
 
   restoreSettingsFromUrl();
+
+  // Installable-PWA enhancement (see CLAUDE.md "Future direction"). Pure
+  // progressive enhancement: registration failing or being unavailable
+  // (file://, an old browser, registration rejected) must never affect the
+  // core converter, so any failure is swallowed silently.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
 })();
