@@ -1947,3 +1947,80 @@ mechanism being tested - was to find the failure before a user did.
 "Verify against real photos, not just the one that motivated the idea"
 is a restatement of this project's own standing process, but it's worth
 restating because it's exactly what caught this.
+
+**Addendum: denoising first turned the failed idea into a shipped
+feature.** The flagged next step above - run the existing bilateral
+blur ("Reduce noise") *before* computing gradients, instead of trying to
+out-guess the noise with a smarter floor - was tried, and it worked.
+Re-tested the same four photos with blur-then-normalize (radius=6,
+floor=30, the same values already calibrated above):
+
+| Photo | Baseline | Blur alone (existing) | Blur + normalize (new) |
+|---|---|---|---|
+| Tiger | 3,175 | 2,409 (loses detail - Phase 16's known cost) | 3,538 (clean, legible, *exceeds* baseline) |
+| Foggy trees | 149 (near-blank) | 110 (even blanker) | 169, but visibly reveals a real, clean tree-trunk shape invisible in either baseline or blur alone |
+| Soft portrait | 178 | 176 | 288 (comparable quality, slightly more silhouette) |
+| Busy room | 1,177 | 1,107 | 1,682 (comparable complexity, not degraded) |
+
+This reframes the whole feature: Phase 16 found bilateral blur trades
+noise-cleanup against losing real structural detail. Normalizing
+contrast *after* blurring recovers what blur costs, while blur's own
+noise suppression is exactly what stops normalization from amplifying
+sensor noise on a foggy photo - the two problems turn out to be the same
+problem, approached from opposite ends. One real caveat found the same
+way: at width=200 (finer resolution), the tiger goes noisy again -
+this helps a lot at typical resolution, it doesn't repeal Phase 17's
+underlying "smaller cells sample weaker gradients" limit at high
+resolution.
+
+**Shipped as an extension of "Reduce noise", not a new checkbox** -
+`computeHandDrawnOutlinePatches` in `script.js` now runs
+`localContrastNormalize` on the Sobel magnitude whenever
+`handDrawnOutlineBlur` is checked, never independently of it (matches
+the finding: normalizing unblurred magnitude is the failure mode from
+earlier in this phase). The checkbox's label copy was updated from
+"cleaner but less fine detail" (no longer true) to reflect that it now
+restores detail rather than costing it.
+
+**A second real bug, found only by testing in the actual app - not the
+standalone comparison script.** Wiring this in and re-verifying against
+the real UI (not the pixel-data-extraction harness used above) produced
+a wall-of-noise result on the foggy photo again, just like the original
+failure. Root cause: `floor=30` was calibrated against magnitude
+computed on *unstretched* levels (blackPoint=0, whitePoint=255) - but
+`computeHandDrawnOutlinePatches` computes magnitude on `source`, which
+already reflects whatever levels adjustment is active, including
+auto-suggest's own. Auto-suggest had picked black=119/white=203 for the
+foggy photo (a real, observed value, not a guess) - squeezing the 0-255
+range into 84 multiplies every pixel difference, and therefore every
+gradient magnitude, real edges and noise alike, by roughly
+255/(white-black) ≈ 3x. The fixed floor, calibrated for a 1x stretch,
+was now three times too permissive against already-amplified noise -
+the identical failure mode from earlier in this phase, just triggered by
+a different, initially-overlooked path into it (auto-suggest's own
+levels, not a user's).
+
+Fixed by scaling `outlineContrastFloor` by that same stretch factor
+(`255 / (whitePoint - blackPoint)`) before passing it to
+`localContrastNormalize`, so the floor stays anchored to the same
+real-world noise level regardless of how much the levels sliders (auto-
+suggested or manual) have already stretched the image. Re-verified
+directly against the live app: the foggy photo's ink-coverage ratio
+under the exact auto-suggested stretch (black=119/white=203) went from
+64% (unscaled floor - visibly a wall of noise) to 38% (scaled floor -
+back to a real, if imperfect, improvement) - confirmed by temporarily
+reverting the fix and re-running the new regression test, which fails
+against the unscaled version and passes against the fix. The tiger,
+whose auto-suggested stretch is much milder (black=7/white=228), was
+barely affected either way (3,595 → 3,630), confirming the fix doesn't
+cost anything on the case that was already working.
+
+**Lesson, again**: the standalone Node+Playwright comparison harness
+used to validate the original idea was faithful to `dither.js`'s pure
+math, but it bypassed a real piece of the actual pipeline - the levels
+adjustment auto-suggest applies before this code ever runs. A
+prototype's own test harness can silently omit exactly the interaction
+that breaks in production; the fix here is what this project's own
+working process already prescribes for any change touching `render()`
+- a real browser pass, not just "the standalone script confirmed it,"
+is what actually caught this.

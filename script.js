@@ -20,6 +20,7 @@
     edgeAngle,
     edgeChar,
     nonMaxSuppress,
+    localContrastNormalize,
     hysteresisThreshold,
     bilateralBlurLuminance,
     computeComplexityMap,
@@ -1279,6 +1280,20 @@
   // tuning from the existing single threshold.
   const outlineHysteresisLowRatio = 0.5;
 
+  // Local-contrast normalization radius/floor for "Reduce noise" (see
+  // localContrastNormalize in dither.js and JOURNEY.md Phase 19 for the
+  // full investigation). Calibrated against this feature's own default
+  // glyph-cell resolution (10x18px, see handDrawnBaseGlyphCellWidth/Height
+  // below) across four real test photos - not derived from anything about
+  // the image itself, the same way handDrawnOutlineThreshold's default of
+  // 38 isn't. Deliberately only applied when handDrawnOutlineBlur is on:
+  // testing found normalizing raw (unblurred) magnitude amplifies sensor/
+  // atmospheric noise into fabricated edges on genuinely low-contrast
+  // photos, badly - the bilateral blur's own noise suppression is a
+  // prerequisite for this to be safe, not an independent option.
+  const outlineContrastRadius = 6;
+  const outlineContrastFloor = 30;
+
   // "Trace outline first": extracts a binary (0/1) black-outline edge map
   // at the same full pixel resolution computeHandDrawnPatches samples at,
   // then slices it into per-cell patches the same shape/size as the
@@ -1326,7 +1341,38 @@
         angles[i] = edgeAngle(dx, dy);
       }
     }
-    const thinned = nonMaxSuppress(magnitudes, angles, fullWidth, fullHeight);
+    // Recovers (and, on real photos, exceeds) the detail bilateral blur
+    // alone costs (see JOURNEY.md Phase 16) by boosting each locally-
+    // weakest-but-real edge back up to the same strength a bold one
+    // already has, instead of leaving every pixel at its raw (now
+    // denoised) magnitude - see localContrastNormalize in dither.js and
+    // outlineContrastRadius/Floor above for why this only runs alongside
+    // the blur, never without it.
+    //
+    // outlineContrastFloor was calibrated against magnitude computed on
+    // UN-stretched (blackPoint=0, whitePoint=255) levels. But magnitude is
+    // computed here on `source`, which already reflects whatever levels
+    // adjustment is currently active - including auto-suggest's own,
+    // which routinely narrows the range a lot on a low-contrast photo
+    // (e.g. black=119/white=203 was observed in testing). Squeezing 0-255
+    // into a narrower band multiplies every pixel difference - and so
+    // every gradient magnitude, real edges and sensor noise alike - by
+    // roughly 255/(whitePoint-blackPoint). Using the fixed floor as-is
+    // against that already-amplified noise reproduces the exact runaway-
+    // noise failure this feature exists to avoid; scaling the floor by
+    // the same factor keeps it anchored to the same real-world noise
+    // level regardless of how much the levels sliders have stretched the
+    // image before this ever sees it.
+    // Clamped to at least 1: blackPoint/whitePoint have independent slider
+    // ranges, so an inverted setting (blackPoint > whitePoint) is possible
+    // and would otherwise divide by a negative number, defeating the
+    // floor guard entirely instead of just falling back to the
+    // unstretched calibration.
+    const contrastStretchFactor = Math.max(1, 255 / (whitePoint - blackPoint || 1));
+    const normalizedMagnitudes = handDrawnOutlineBlur
+      ? localContrastNormalize(magnitudes, fullWidth, fullHeight, outlineContrastRadius, outlineContrastFloor * contrastStretchFactor, 255)
+      : magnitudes;
+    const thinned = nonMaxSuppress(normalizedMagnitudes, angles, fullWidth, fullHeight);
     const edgeBinary = hysteresisThreshold(
       thinned,
       fullWidth,
