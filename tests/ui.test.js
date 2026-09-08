@@ -8,10 +8,20 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const { pathToFileURL } = require("node:url");
 const { chromium } = require("playwright");
 
 const ROOT = path.join(__dirname, "..");
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".onnx": "application/octet-stream", ".mjs": "text/javascript" };
+const MIME = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".wasm": "application/wasm",
+  ".onnx": "application/octet-stream",
+  ".mjs": "text/javascript",
+  ".webmanifest": "application/manifest+json",
+  ".png": "image/png",
+};
 
 const TEST_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFUlEQVQIHWP8z8Dwn4EIwDiqEF0oAJHiAf0DKtA0AAAAAElFTkSuQmCC";
@@ -1248,4 +1258,57 @@ test("the Redraw with AI info icon toggles a tap/keyboard-accessible popover", a
   assert.ok((await page.textContent("#aiRedrawInfoPopover")).length > 0);
   await page.click("body");
   assert.equal(await page.isVisible("#aiRedrawInfoPopover"), false);
+});
+
+test("the page links a web app manifest, icons, and theme-color for installability", async () => {
+  const manifestHref = await page.getAttribute('link[rel="manifest"]', "href");
+  assert.ok(manifestHref, "expected a <link rel=manifest>");
+  const iconHref = await page.getAttribute('link[rel="icon"]', "href");
+  assert.ok(iconHref, "expected a <link rel=icon>");
+  const appleIconHref = await page.getAttribute('link[rel="apple-touch-icon"]', "href");
+  assert.ok(appleIconHref, "expected a <link rel=apple-touch-icon>");
+  const themeColor = await page.getAttribute('meta[name="theme-color"]', "content");
+  assert.ok(themeColor, "expected a <meta name=theme-color>");
+});
+
+test("manifest.webmanifest is valid JSON with the fields required to install as a PWA", async () => {
+  const manifestHref = await page.getAttribute('link[rel="manifest"]', "href");
+  const manifest = await page.evaluate(async (href) => {
+    const res = await fetch(href);
+    return { status: res.status, body: await res.json() };
+  }, manifestHref);
+
+  assert.equal(manifest.status, 200);
+  assert.equal(typeof manifest.body.name, "string");
+  assert.ok(manifest.body.name.length > 0);
+  assert.equal(typeof manifest.body.short_name, "string");
+  assert.equal(manifest.body.display, "standalone");
+  assert.ok(manifest.body.start_url);
+  assert.ok(manifest.body.background_color);
+  assert.ok(manifest.body.theme_color);
+  assert.ok(Array.isArray(manifest.body.icons) && manifest.body.icons.length > 0);
+  const sizes = manifest.body.icons.map((icon) => icon.sizes);
+  assert.ok(sizes.includes("192x192"), "expected a 192x192 icon");
+  assert.ok(sizes.includes("512x512"), "expected a 512x512 icon");
+  assert.ok(
+    manifest.body.icons.some((icon) => (icon.purpose || "").includes("maskable")),
+    "expected a maskable icon for Android's adaptive-icon safe zone"
+  );
+});
+
+test("opening the app via file:// still links the manifest and converts an image, unaffected by the service worker registration attempt", async () => {
+  const filePage = await browser.newPage();
+  const fileErrors = [];
+  filePage.on("pageerror", (err) => fileErrors.push(err.message));
+  await filePage.goto(pathToFileURL(path.join(ROOT, "index.html")).href, { waitUntil: "domcontentloaded" });
+
+  assert.ok(await filePage.getAttribute('link[rel="manifest"]', "href"), "expected a <link rel=manifest> under file:// too");
+  assert.equal(await filePage.isVisible("#emptyState"), true);
+
+  await filePage.setInputFiles("#filepicker", testImagePath);
+  await filePage.waitForFunction(() => document.getElementById("charCount").textContent !== "0");
+  assert.equal(await filePage.isVisible("#output"), true);
+
+  assert.deepEqual(fileErrors, [], `file:// load threw uncaught error(s): ${fileErrors.join("; ")}`);
+  await filePage.close();
 });
