@@ -2024,3 +2024,62 @@ that breaks in production; the fix here is what this project's own
 working process already prescribes for any change touching `render()`
 - a real browser pass, not just "the standalone script confirmed it,"
 is what actually caught this.
+
+## Phase 20: Installable PWA - the manifest, the icon, and a test-suite risk found before it shipped
+
+Followed through on the "Future direction" note in `CLAUDE.md`: added a
+web app manifest (`manifest.webmanifest`), an icon set, and a service
+worker (`sw.js`) so the app can be installed to a home screen/desktop,
+entirely via standard web platform APIs (no build step, no bundler -
+consistent with the project's own constraint on itself).
+
+**The icon didn't exist and needed making, with no new dependency.**
+Rather than pull in an image library or hand-author a binary asset, a
+throwaway script used Playwright (already a devDependency for the test
+suite) to draw a full braille cell - the app's own core motif - onto a
+`<canvas>` in the site's existing palette (`--accent` #2c5f8a dots on
+`--paper` #eef1ec) and screenshot it at each required size (192, 512,
+512-maskable, 180 apple-touch, 32 favicon). The script itself isn't
+committed - its output (five PNGs under `icons/`) is.
+
+**A real risk, found before writing any service-worker code, not
+after.** `tests/ui.test.js` blocks all `/vendor/` requests by default
+(`page.route(/\/vendor\//, route => route.abort())`) so the ~68 tests
+that don't exercise "Suppress background" don't each pay the on-device
+model's load cost - the difference between the suite taking seconds
+and minutes. The original plan (agreed before implementation) was to
+have the service worker cache-first `/vendor/` too, falling back to a
+`fetch()` issued from *inside* the service worker on a cache miss. That
+fetch runs in a separate execution context from the page, and
+Playwright's `page.route()` interception is scoped to the page's own
+frames - there was real doubt it would reliably catch a request a
+service worker issues itself, which could have silently made most of
+the suite start downloading the real 18MB model on every run instead of
+the synthetic block it's built around. Flagged this to the user before
+writing `sw.js`, rather than writing the riskier version and finding
+out from a suddenly-slow CI run. Resolution: `sw.js` never intercepts
+`/vendor/` at all (no `respondWith` for it), so those requests are
+indistinguishable from a page with no service worker, and the existing
+block keeps working exactly as before - confirmed by re-running the
+full suite afterward with no timing regressions anywhere.
+
+**What's precached vs. left alone**: only the small app shell
+(`index.html`, `style.css`, `dither.js`, `script.js`, `saliency.js`,
+`manifest.webmanifest`, the icons) is precached on install. `vendor/`
+(the on-device model) and the Gemini API call are both left completely
+untouched by the service worker's fetch handler - `vendor/` because it
+already degrades gracefully offline on its own (no need for the SW to
+duplicate that), and the Gemini call because `sw.js` must never see,
+cache, or log it, per `CLAUDE.md`'s API-key handling rules for "Redraw
+with AI". Update strategy is `skipWaiting()` + `clients.claim()` on
+activate - the app has no unsaved state to protect, so a new deploy
+takes over immediately rather than prompting.
+
+**Verified manually in a real browser** (not just Playwright's
+assertion-based tests, per the design's own decision not to automate
+service-worker lifecycle testing): first load registers and activates
+the worker (`navigator.serviceWorker.controller` becomes non-null),
+`caches.keys()` shows exactly the intended shell files and nothing
+else, and - the actual point of the feature - going offline and
+reloading still loads the app and successfully converts an image, with
+zero page errors throughout.

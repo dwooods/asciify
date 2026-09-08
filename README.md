@@ -25,6 +25,7 @@ The braille dithering/bit-packing approach is ported from [Lachlan Arthur's Brai
 - Shareable settings permalink — render mode, dithering, palette, thresholds, dimensions, levels, adaptive detail, hand-drawn style, and invert all round-trip through the URL (never the image itself), so a link reproduces a look
 - Accessible output: the (potentially huge) character grid is hidden from screen readers, with a concise live-region status announcing what was rendered
 - No build step, no runtime dependencies for the core converter — plain HTML/CSS/JS, works straight from `file://`. Two opt-in exceptions: Suppress background vendors `onnxruntime-web` and needs `http(s)`; Redraw with AI needs genuine internet access to reach Google's API. Neither is required for the core converter.
+- Installable as a PWA when served over `http(s)` — a manifest + service worker let a browser add it to a home screen/desktop and load the app itself offline after the first visit (the converter itself never needed a network to run; this just lets the app shell load without one too)
 
 ## Running it
 
@@ -84,6 +85,7 @@ CI (`.github/workflows/test.yml`) runs the full suite on every push/PR to `main`
 - **Trace outline first** extracts a binary edge map (Sobel gradient → non-maximum suppression → hysteresis threshold, the same middle stages a Canny detector uses) and matches glyphs against that instead of raw tone. Its **Reduce noise** option first runs a bilateral blur to suppress sensor/compression noise, then locally normalizes the remaining edge contrast — rescaling each pixel's gradient relative to the strongest one in its own neighborhood, scaled by however much the current black/white point levels have already stretched contrast — so a real but faint edge (fur, skin, fabric) reaches the same strength a bold line already has, recovering the detail the blur alone would have cost.
 - **Suppress background** runs a small salient-object-detection model (U²-Netp) via `onnxruntime-web` to compute a subject mask, then blanks background-masked cells in whichever mode's render loop is active.
 - **Redraw with AI** sends the loaded image (downscaled to at most 1024px) and a fixed line-art prompt straight from the browser to `gemini-2.5-flash-image` via a plain `fetch()` call — no SDK, since Google's official JS SDK adds a header that breaks the CORS preflight for this exact use case — and, on success, feeds the returned PNG through the same `loadFile()` every other upload uses.
+- **The service worker** (`sw.js`) precaches only the small app shell (HTML/CSS/JS/manifest/icons) on install and serves it cache-first, so the app itself loads offline after the first visit. It never touches `vendor/` (the on-device model) or the Gemini API call — both are left completely untouched, so they behave exactly as if no service worker were installed.
 
 ## Project history and roadmap
 
