@@ -2083,3 +2083,39 @@ the worker (`navigator.serviceWorker.controller` becomes non-null),
 else, and - the actual point of the feature - going offline and
 reloading still loads the app and successfully converts an image, with
 zero page errors throughout.
+
+## Phase 21: Row Level Security enabled on the Supabase mirror - closing a public-exposure hole, no policies needed
+
+While checking that this session had access to the `journey_entries`/`ideas`
+mirror (set up in an earlier session, see Phase 20's follow-up), the
+Supabase tooling's own `list_tables` call surfaced a critical advisory:
+both tables had Row Level Security (RLS) disabled.
+
+**What that meant in practice**: Supabase's public API exposes every
+table to two roles baked into its API keys - `anon` (anyone holding the
+project's anon key, which is meant to be public/embeddable in client
+code) and `authenticated` (anyone logged into Supabase Auth on this
+project). With RLS off, both roles get whatever access Postgres grants
+by default, which Supabase's setup makes broad - i.e. anyone who ever
+obtained the anon key could have read or written every row in both
+tables, no login required. Nothing was using the anon key against these
+tables (only this session, via the Supabase MCP connector's own
+elevated connection, which bypasses RLS entirely), but the tables were
+sitting open regardless.
+
+**Fix**: `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` on both tables,
+deliberately with zero policies attached. Enabling RLS with no policies
+defaults to denying all `anon`/`authenticated` access rather than
+allowing it - the opposite of the unsafe default - while leaving this
+session's own access untouched, since the MCP connector's Postgres
+connection isn't subject to RLS. Verified by re-querying both tables
+immediately after: `rls_enabled: true` on both, row counts unchanged
+(21 journey entries, 7 ideas), confirming the fix closed the hole
+without breaking the only access path actually in use.
+
+**Left for later, on purpose**: no policies were written, because
+there's no current use case for `anon`/`authenticated` access to these
+tables - no frontend reads them today. If one is ever built (e.g. a
+small dashboard on the ideas backlog), it will need explicit policies
+added at that point, scoped to whatever that app actually needs to do,
+rather than guessed at now.
