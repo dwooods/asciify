@@ -87,6 +87,11 @@ CI (`.github/workflows/test.yml`) runs the full suite on every push/PR to `main`
 - **Redraw with AI** sends the loaded image (downscaled to at most 1024px) and a fixed line-art prompt straight from the browser to `gemini-2.5-flash-image` via a plain `fetch()` call — no SDK, since Google's official JS SDK adds a header that breaks the CORS preflight for this exact use case — and, on success, feeds the returned PNG through the same `loadFile()` every other upload uses.
 - **The service worker** (`sw.js`) precaches only the small app shell (HTML/CSS/JS/manifest/icons) on install and serves it cache-first, so the app itself loads offline after the first visit. It never touches `vendor/` (the on-device model) or the Gemini API call — both are left completely untouched, so they behave exactly as if no service worker were installed.
 
+## Project history and roadmap
+
+- [`IDEAS.md`](IDEAS.md) — the backlog: things worth trying next, brainstormed but not yet committed to.
+- [`JOURNEY.md`](JOURNEY.md) — the development history: what was actually tried, what broke, what was learned, with real numbers rather than just the final answer.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The braille dithering/packing algorithm is adapted from Lachlan Arthur's original project; that project's MIT notice is preserved there.

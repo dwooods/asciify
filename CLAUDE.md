@@ -10,6 +10,15 @@ The dithering/braille-packing approach is ported from [Lachlan Arthur's Braille-
 
 **Future direction**: this project is expected to ship as an installable mobile app at some point - most likely a PWA (manifest + service worker, "Add to Home Screen") or a Trusted Web Activity wrapper on Android, not a native rewrite, since the whole point is that the existing client-side architecture already works unmodified in a mobile WebView. Nothing needs building for this now, but new work should not quietly foreclose it: keep relying only on standard web platform APIs (canvas, `fetch`, WASM, clipboard, drag-and-drop with a touch-friendly fallback - `handDrawnOutline`'s focus-region drawing already supports touch events, not just mouse), avoid anything that assumes a server-side session or a desktop-only capability, and keep the UI usable at phone-sized viewports. If a feature would only make sense with server-side state (accounts, sync, shared storage), flag that explicitly rather than building around it silently - it's a real architecture decision, not a small one.
 
+## What to work on next
+
+Two files, two different jobs - check both when picking up work with no other context (a fresh session, or "what should we work on"):
+
+- **`IDEAS.md`** - the backlog: things worth trying, brainstormed but not committed to. Pick from here, or add to it when a new idea comes up mid-task rather than chasing it immediately.
+- **`JOURNEY.md`** - the historical record: what was actually tried, what broke, what was learned, real numbers. Read the relevant phase before repeating an investigation - several ideas in `IDEAS.md`'s "Done / decided against" section were tried once already for a documented reason.
+
+**The Supabase Postgres project is the source of truth** (`journey_entries` and `ideas` tables, project ref `lutfyybkbhcmqculfoka`) - queryable/filterable, e.g. `select title from ideas where status = 'backlog'`. `IDEAS.md` and `JOURNEY.md` are generated *from* that database, kept for git-tracked history and zero-setup reading by any session with no other context (`cat IDEAS.md`, no credentials, works even over `file://`). Access the database via the Supabase MCP connector (`claude mcp add --transport http supabase https://mcp.supabase.com/mcp`, then authorize the org in a browser); it only works while the free-tier project hasn't auto-paused from a week of inactivity (resume it from the Supabase dashboard if a query fails). **When adding or changing an idea or a journey entry, write it to the database first, then update the corresponding markdown file to match** - the file should never say something the database doesn't agree with. Both tables currently have Row Level Security disabled (flagged as a critical security advisory when first discovered) - anyone with the project's anon key can read/write every row; not fixed as of this writing since enabling RLS with no policies would block all access outright.
+
 ## Commands
 
 ```bash
