@@ -1122,6 +1122,16 @@ test("Redraw with AI sends the image and prompt to Gemini and loads a successful
   // upload uses - imageInfo updates, output re-renders, no separate path.
   await page.waitForFunction(() => document.getElementById("imageInfo").textContent.includes("gemini-redraw"));
   assert.notEqual(await page.textContent("#charCount"), "0");
+
+  // Regression test: a real run against the actual API showed the status
+  // stuck on the interim "Redrawn - loading result…" text forever, even
+  // after the image had visibly finished loading and re-rendering -
+  // loadFile() had no way to tell the caller its (async) decode was done.
+  // Asserting the exact final text, not just a substring match both
+  // messages would satisfy, is what would have caught that.
+  await page.waitForFunction(
+    () => document.getElementById("aiRedrawStatus").textContent === "Redrawn - line art loaded.",
+  );
 });
 
 test("Redraw with AI reports a clear status when Gemini returns no image (e.g. safety-filtered)", async () => {
