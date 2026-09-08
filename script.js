@@ -255,6 +255,11 @@
   const clearBtn = $("#clearBtn");
   const loadError = $("#loadError");
   const srStatus = $("#srStatus");
+  const aiApiKeyInput = $("#aiApiKey");
+  const aiRedrawBtn = $("#aiRedrawBtn");
+  const aiRedrawStatus = $("#aiRedrawStatus");
+  const aiRedrawInfoIcon = $("#aiRedrawInfoIcon");
+  const aiRedrawInfoPopover = $("#aiRedrawInfoPopover");
   const suggestField = $("#suggestField");
   const suggestionButtons = { braille: $("#suggestBraille"), ascii: $("#suggestAscii"), edges: $("#suggestEdges") };
   const suggestionPreviewEls = { braille: $("#suggestBraillePreview"), ascii: $("#suggestAsciiPreview"), edges: $("#suggestEdgesPreview") };
@@ -297,6 +302,7 @@
       }
       updateFocusOverlay();
       if (suppressBackground) requestSubjectMask();
+      updateAiRedrawButtonState();
     };
     // file.type isn't a reliable gate (it can be empty for legitimate images
     // from some sources), so actual decode success/failure is the real
@@ -332,6 +338,8 @@
     srStatus.textContent = "Image cleared.";
     suggestField.style.display = "none";
     lastSuggestions = null;
+    aiRedrawStatus.textContent = "";
+    updateAiRedrawButtonState();
   });
 
   filepicker.addEventListener("change", function () {
@@ -588,6 +596,7 @@
   setupInfoPopover(suppressBackgroundInfoIcon, suppressBackgroundInfoPopover);
   setupInfoPopover(handDrawnStyleInfoIcon, handDrawnStyleInfoPopover);
   setupInfoPopover(handDrawnOutlineInfoIcon, handDrawnOutlineInfoPopover);
+  setupInfoPopover(aiRedrawInfoIcon, aiRedrawInfoPopover);
 
   adaptiveDetailInput.addEventListener("change", function () {
     adaptiveDetail = this.checked;
@@ -1735,6 +1744,109 @@
         srStatus.textContent = "Background suppressed using on-device subject detection.";
       });
   }
+
+  // "Redraw with AI" - the one feature in this app that needs real internet
+  // access, not just http(s) serving (unlike Suppress background, which only
+  // needs http(s) to load its vendored on-device model and otherwise works
+  // fully offline). It sends the loaded image, over HTTPS, directly from
+  // this browser to Google's Gemini API using the user's own key - never
+  // through any server this project controls, so there's no cost to the
+  // project and no third party but Google ever sees the key or the image.
+  // Security properties, deliberately: the key is read fresh from the input
+  // on every request and never assigned to a variable that outlives it,
+  // never written to localStorage/sessionStorage/cookies, never included in
+  // the shareable settings permalink (see updateUrl - this feature doesn't
+  // touch it), and never passed to console.log/console.error - reloading
+  // the page clears it completely, since nothing here persists it. See
+  // JOURNEY.md for how the request format and CORS behavior were validated.
+  const geminiImageModel = "gemini-2.5-flash-image";
+  const geminiRedrawPrompt =
+    "Redraw this image as clean black-and-white line art: crisp, uniform-weight black outlines on a pure white background. No shading, no gradients, no color, no cross-hatching. Preserve the same subject, pose, and composition.";
+
+  // Downscales before sending - Gemini's image understanding doesn't need
+  // the original resolution, and a smaller payload uploads faster over a
+  // typical connection. 1024px matches what real testing (see JOURNEY.md)
+  // validated as producing clean results.
+  function imageToBase64Png(img, maxDim) {
+    const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL("image/png").split(",")[1];
+  }
+
+  function base64ToBlob(base64, mimeType) {
+    const bytes = atob(base64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    return new Blob([arr], { type: mimeType });
+  }
+
+  // Enabled only once there's both an image to redraw and a key to redraw
+  // it with - re-checked on every image load/clear and every keystroke in
+  // the key field, so it never invites a request that can't succeed.
+  function updateAiRedrawButtonState() {
+    aiRedrawBtn.disabled = !image || !aiApiKeyInput.value.trim();
+  }
+
+  aiApiKeyInput.addEventListener("input", updateAiRedrawButtonState);
+
+  aiRedrawBtn.addEventListener("click", async function () {
+    const apiKey = aiApiKeyInput.value.trim();
+    if (!apiKey || !image) return;
+
+    // If the image changes or is cleared while this request is in flight,
+    // its result belongs to an image that's no longer loaded - discard it
+    // rather than silently loading a stale redraw over whatever is current.
+    const generation = imageGeneration;
+    aiRedrawBtn.disabled = true;
+    aiRedrawStatus.textContent = "Redrawing with Gemini…";
+
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${geminiImageModel}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            role: "user",
+            parts: [
+              { text: geminiRedrawPrompt },
+              { inlineData: { mimeType: "image/png", data: imageToBase64Png(image, 1024) } },
+            ],
+          }],
+          generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+        }),
+      });
+
+      if (generation !== imageGeneration) return;
+
+      if (!res.ok) {
+        aiRedrawStatus.textContent = (res.status === 400 || res.status === 403)
+          ? "Request rejected - check that your API key is valid and has access to this model."
+          : `Request failed (HTTP ${res.status}).`;
+        return;
+      }
+
+      const json = await res.json();
+      const part = json?.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+      if (!part) {
+        aiRedrawStatus.textContent = "No image came back - it may have been filtered. Try a different photo.";
+        return;
+      }
+
+      const blob = base64ToBlob(part.inlineData.data, part.inlineData.mimeType || "image/png");
+      aiRedrawStatus.textContent = "Redrawn - loading result…";
+      loadFile(new File([blob], "gemini-redraw.png", { type: blob.type }));
+    } catch (err) {
+      if (generation !== imageGeneration) return;
+      aiRedrawStatus.textContent = "Network error - the request never reached Google's API.";
+    } finally {
+      if (generation === imageGeneration) updateAiRedrawButtonState();
+    }
+  });
 
   Object.entries(suggestionButtons).forEach(([mode, btn]) => {
     btn.addEventListener("click", function () {

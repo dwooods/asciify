@@ -1677,3 +1677,130 @@ current software. Knowing precisely which layer failed - GPU detection
 succeeded; production-grade compute for a fast-moving codebase like
 current ComfyUI did not - is what made "stop here" a confident decision
 instead of a shrug.
+
+## Phase 18: Local generation abandoned for real, a BYOK Gemini API integration shipped instead
+
+Phase 17 stopped at ComfyUI specifically - the user pushed further and
+asked to try `stable-diffusion-webui-amdgpu-forge`, a different AMD-DirectML
+fork, rather than accepting the ComfyUI wall as final. Worth recording
+honestly: this *did* get further. After several real, ordinary packaging
+issues (wrong Python version, `--use-directml` vs. the fork's actual
+`--directml` flag, a `pkg_resources`/`bdist_wheel` build-isolation problem
+installing CLIP, a wrong ControlNet model repo format - diffusers-style
+`config.json`+`.safetensors` instead of the single-file format Forge's UI
+actually reads), Forge ran end-to-end on the RX 6700 XT via DirectML and
+produced real Stable Diffusion + ControlNet-lineart generations in
+15-30 seconds, despite DirectML still misreporting VRAM (1024MB reported,
+10.8GB+ actually used). So the hardware wall from Phase 17 was real for
+ComfyUI's specific dependency stack, not for DirectML on this GPU in
+general - a narrower conclusion than Phase 17 drew, corrected here rather
+than left standing.
+
+**But the generated line art itself was the wrong style.** The
+ControlNet-lineart output was a busy crosshatch/engraving look - 15,128
+non-space characters through the shipped pipeline, busier and less
+legible than either the real photo or the Gemini-app image from Phase 17.
+Compared side by side against a fresh Gemini-app redraw of the same
+tiger (flat, sparse, uniform-weight contour lines, no crosshatching -
+3,969 non-space characters, the cleanest result of the whole
+investigation), the two are both genuinely "monochrome AI line art" by
+category, but not interchangeable inputs for this pipeline: bold, flat,
+low-line-count contours convert far better than dense hatching, which
+just replaces photographic noise with a different kind of noise. This
+matters for anyone revisiting local generation later - matching
+Gemini's flat-outline style would need prompt/ControlNet-preprocessor
+tuning (a lineart_realistic-style preprocessor and a low-density LoRA or
+prompt bias, not just "add ControlNet"), not just getting a pipeline
+running at all.
+
+**At this point the user asked to abandon local generation entirely**
+("this seems to be moving away from something cloning and easily
+running this program") and pivot: use the Gemini API directly, with
+each *user* supplying their own key so the redraw step costs the
+project nothing and doesn't require a backend. That reframes the
+question from "can we generate images" (answered, twice over, since
+Phase 17) to "can a static, backend-less site call a paid cloud API
+safely" - a real architecture question, tested rather than assumed:
+
+- **CORS was the actual risk**, and it was resolved empirically, not
+  guessed at. A standalone test page (`fetch()`, no SDK) called
+  `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}`
+  directly from the browser. The first attempt used the model name
+  `gemini-2.0-flash-exp` and got HTTP 404 - which, critically, is a
+  *server* response, not a thrown `fetch` `TypeError`, proving CORS
+  didn't block the request at all; a real CORS block would never reach
+  the point of getting an HTTP status back. (Google's newer `js-genai`
+  SDK was tried first and *does* get CORS-blocked, because it adds an
+  `Api-Revision` header that fails preflight - the plain REST call
+  sidesteps that entirely, which is why this project calls the API
+  directly rather than depending on the SDK.)
+- **The model name was stale, not the architecture.** Querying the live
+  `ListModels` endpoint directly (rather than trusting another
+  secondhand search result) found current names as of testing:
+  `gemini-2.5-flash-image` ("Nano Banana"), `gemini-3.1-flash-image`
+  ("Nano Banana 2"), `gemini-3-pro-image`/`-preview` ("Nano Banana
+  Pro"), `gemini-3.1-flash-lite-image`. Switching to
+  `gemini-2.5-flash-image` got a real HTTP 200 with a genuine generated
+  image back, end to end, no backend involved at any point.
+- The user's own API-key test never touched this chat session - a
+  self-contained local HTML page was built for them to open and paste
+  their key into directly in their own browser, so the key was never
+  pasted into, logged by, or transmitted through this conversation.
+
+**The shipped feature** ("Redraw with AI" in `index.html`/`script.js`)
+sends the loaded image at up to 1024px (downscaled client-side, matching
+what testing validated) plus a fixed line-art prompt to
+`gemini-2.5-flash-image`, and on success feeds the returned PNG through
+the existing `loadFile()` - no separate image-loading path, no
+duplicated thumb/auto-suggest/render logic. Explicit security decisions,
+made because a pasted API key is real, if modest, exposure surface:
+
+- The key is read fresh from the input element's value on every
+  request and never assigned to a variable that outlives the click
+  handler - no in-memory copy floating around to leak via a later bug.
+- **Deliberately not persisted anywhere** - no `localStorage`, no
+  `sessionStorage`, no cookie, no inclusion in the shareable settings
+  permalink (`updateUrl()`/`restoreSettingsFromUrl()` were left
+  untouched specifically so this can never happen by accident).
+  Reloading the page clears the key completely. This trades convenience
+  (re-pasting the key each session) for the strongest available
+  guarantee against silent leakage, since a backend-less app has no
+  server-side place to keep a secret safely anyway.
+- Never passed to `console.log`/`console.error` - error paths report
+  the HTTP status or a generic network-failure message, never the
+  request URL (which embeds the key as a query parameter) or body.
+- The input is `type="password"` with `autocomplete="off"`, and the app
+  has no `<form>` element anywhere, which avoids inviting a browser
+  password-manager save prompt for what isn't a login credential.
+- The in-panel help text tells users to restrict their own key by HTTP
+  referrer in Google AI Studio - the actual mitigation Google provides
+  for a key that's going to sit in client-side JS, since no purely
+  client-side app can fully hide a secret from its own user.
+- Verified live in a real browser (Playwright), not just read as
+  "looks right": confirmed the button's enabled/disabled state machine
+  (needs both an image and a non-empty key), confirmed the key never
+  appears in the URL after use, confirmed `localStorage`/`sessionStorage`
+  stay empty after a full redraw-and-clear cycle, and confirmed no
+  console message ever contains the key.
+
+**Where this leaves things**: the zero-backend, zero-build-step
+architecture this whole project is built around is preserved even for a
+feature that needs a paid third-party API - the trick is that the user's
+own key and the user's own browser do the paying and the calling, this
+project's code is just the client. Local, free, fully-offline generation
+(ComfyUI/Forge + ControlNet, tuned toward Gemini's flat-outline style
+rather than the default crosshatch) remains a real, understood,
+separately-scoped option for later - not blocked by hardware after all,
+just by the extra tuning work needed to match the style that actually
+converts well.
+
+**Lesson**: Phase 17 called the ComfyUI wall a hardware gap; pushing
+past that assumption (per this project's own stated engineering process
+- verify, don't stop at the first plausible-sounding "unsupported")
+found a working local path after all, just with the wrong output style.
+Neither conclusion was wrong at the moment it was written, but the
+second one was cheaper to reach *because* it built on the first
+attempt's specific, logged failures instead of starting over. And the
+CORS question - the one thing that could have killed the entire BYOK
+approach - was answered by making one real request and reading the
+actual response, not by reasoning about it from documentation alone.

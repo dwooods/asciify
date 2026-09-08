@@ -259,7 +259,7 @@ a { color: var(--accent); }
   color: var(--ink-soft);
 }
 
-select, input[type="number"], textarea {
+select, input[type="number"], input[type="password"], textarea {
   width: 100%;
   font: inherit;
   font-family: "IBM Plex Mono", monospace;
@@ -326,6 +326,21 @@ input[type="range"] {
    doesn't show at all (most mobile browsers ignore title on tap) or isn't
    reachable without a pointer (keyboard-only users) - toggled by script.js,
    not shown/hidden by hover, so it works the same way for both. */
+.aiRedrawRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  position: relative;
+  margin-bottom: 0.5rem;
+}
+.aiRedrawRow input[type="password"] { flex: 1; }
+#aiRedrawBtn { display: block; width: 100%; }
+.aiRedrawStatus {
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  min-height: 1em;
+}
 .infoPopover {
   position: absolute;
   z-index: 10;

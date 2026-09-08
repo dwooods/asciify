@@ -37,6 +37,17 @@
           </div>
         </div>
 
+        <div class="field" id="aiRedrawField">
+          <label for="aiApiKey">Redraw with AI <span class="val">optional, needs your own Gemini key</span></label>
+          <div class="aiRedrawRow">
+            <input type="password" id="aiApiKey" placeholder="Gemini API key" autocomplete="off" spellcheck="false">
+            <span class="infoIcon" id="aiRedrawInfoIcon" tabindex="0" role="button" aria-expanded="false" aria-describedby="aiRedrawInfoPopover" title="Sends your loaded image straight from this browser to Google's Gemini API over HTTPS, using your own key, to redraw it as clean line art before converting - needs an internet connection. Your key stays only in this page's memory: never saved, logged, or sent anywhere but Google's API, and it's gone the moment you reload the page. Get a free key at aistudio.google.com/apikey - for extra safety, restrict it there to HTTP referrer = this site's domain.">ⓘ</span>
+            <div class="infoPopover" id="aiRedrawInfoPopover" role="tooltip" style="display:none;">Sends your loaded image straight from this browser to Google's Gemini API over HTTPS, using your own key, to redraw it as clean line art before converting - needs an internet connection. Your key stays only in this page's memory: never saved, logged, or sent anywhere but Google's API, and it's gone the moment you reload the page. Get a free key at aistudio.google.com/apikey - for extra safety, restrict it there to HTTP referrer = this site's domain.</div>
+          </div>
+          <button class="btn" id="aiRedrawBtn" type="button" disabled>Redraw as line art</button>
+          <div class="aiRedrawStatus" id="aiRedrawStatus"></div>
+        </div>
+
         <div class="field" id="suggestField" style="display:none;">
           <label>Suggested settings <span class="val">tap to apply</span></label>
           <div class="suggestions">
